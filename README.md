@@ -1,0 +1,119 @@
+# MCDiag Agent
+
+Лёгкий плагин-агент телеметрии для серверов **Leaf / Paper 1.20+**. Собирает входы, выходы, смерти, SEVERE-ошибки и метрики (TPS, MSPT, online, entities) и раз в 10 секунд асинхронно отправляет их батчем в MCDiag (`POST /api/v1/ingest`).
+
+- Jar ≈ 38 KB, без зависимостей: только публичный Paper API, JSON собирается вручную.
+- Память: буфер ограничен (по умолчанию 500 событий + 60 точек метрик), в обычной работе меньше 100 KB.
+- Влияние на TPS: в основном потоке выполняются только обработчики join/quit/death (хеш и одна строка) и подсчёт сущностей раз в 5 с. Сеть и метрики работают асинхронно.
+
+## Установка
+
+1. Скопируйте `MCDiag-Agent-<version>.jar` в `plugins/` и запустите сервер. Будет создан `plugins/MCDiag/config.yml`, при первом запуске в нём генерируется `uuid_salt`.
+2. Впишите `backend_url` (только `https://`).
+3. Задайте токен **из консоли сервера**:
+   ```
+   diag token mcd_<serverId>_<uuid>
+   ```
+   Из чата команда запрещена: команды игроков пишутся в лог, и токен попал бы туда.
+
+## Конфигурация
+
+| Ключ | По умолчанию | Описание |
+|---|---|---|
+| `backend_url` | — | URL приёма, только HTTPS. При `http://` отправка не запускается |
+| `server_token` | `""` | Токен сервера из панели. Нигде не логируется, в выводе маскируется как `mcd_****abcd` |
+| `uuid_salt` | генерируется | Соль SHA-256 для UUID. Не меняйте после запуска |
+| `batch_interval_sec` | `10` | Период отправки, 5–3600 |
+| `max_buffer_size` | `500` | Лимит событий в памяти, 10–5000. Старые вытесняются |
+| `max_batch_events` | `100` | Событий в одном запросе, 1–500 |
+| `metrics_interval_sec` | `5` | Период метрик, 5–60 |
+| `max_errors_per_minute` | `30` | Лимит ошибок в минуту, остальные отбрасываются |
+| `collect.*` | `true` | Вкл./выкл. `joins`, `quits`, `deaths`, `errors`, `metrics` |
+
+## Команды
+
+Право `mcdiag.admin` (по умолчанию у операторов).
+
+| Команда | Действие |
+|---|---|
+| `/diag status` | Состояние отправки, маска токена, заполнение буфера, примерный объём буфера в KB, число отброшенных записей, результат последней отправки, heap JVM |
+| `/diag token` | Показать маску токена |
+| `diag token <value>` | Задать токен (только из консоли), сохранить в конфиг и применить |
+| `/diag reload` | Перечитать `config.yml` и перезапустить таски |
+
+## Что собирается
+
+| Событие | Поля |
+|---|---|
+| `join` | `ts`, `playerHash`, `firstJoin`, `world` |
+| `quit` | `ts`, `playerHash`, `sessionSec` (из `Player#getLastLogin`) |
+| `death` | `ts`, `playerHash`, `cause` (DamageCause), `killerType` (`PLAYER` / тип моба / `NONE`), `world` |
+| `error` | `ts`, `logger`, `message` (≤ 512), `trace` (≤ 36 строк / 6000 символов) |
+| метрика | `ts` (кратно 5 с), `tps`, `mspt`, `online`, `entities` |
+
+**Приватность.** UUID игрока превращается в `SHA-256(uuid_salt + uuid)`, а бэкенд дополнительно прогоняет этот хеш через HMAC со своим секретом. IP, ники, чат и инвентарь не собираются. Объекты `Player`, `Entity`, `Location` и `Throwable` не хранятся: в буфер сразу попадает готовая строка.
+
+Пример батча:
+
+```json
+{"batchId":"5b0e8c1a-3f2d-4a7b-9c11-2e4f6a8b9d00","sentAt":1793635210000,
+ "plugin":{"version":"0.1.0","core":"leaf","mcVersion":"1.21.4"},
+ "events":[
+  {"type":"join","ts":1793635201234,"playerHash":"9f86d0…0a08","firstJoin":false,"world":"world"},
+  {"type":"death","ts":1793635203456,"playerHash":"9f86d0…0a08","cause":"ENTITY_ATTACK","killerType":"ZOMBIE","world":"world"},
+  {"type":"quit","ts":1793635207890,"playerHash":"9f86d0…0a08","sessionSec":6},
+  {"type":"error","ts":1793635208000,"logger":"Minecraft","message":"Could not pass event PlayerJoinEvent to SomePlugin",
+   "trace":"java.lang.NullPointerException: …\n\tat a.b.C.d(C.java:42)\n\t... 57 lines omitted ...\n\tat java.lang.Thread.run(Thread.java:833)"}
+ ],
+ "metrics":[{"ts":1793635205000,"tps":20.0,"mspt":11.9,"online":37,"entities":2850}]}
+```
+
+Всё, что не ASCII, экранируется как `\uXXXX`, поэтому длина тела в символах совпадает с длиной в байтах. Батч ограничен 60 KB при лимите бэкенда 64 KB.
+
+## Устройство
+
+```
+McDiagPlugin            жизненный цикл, volatile-снимок конфига, планирование тасков
+├─ config/AgentConfig   неизменяемый снимок config.yml + проверка https/токена
+├─ buffer/TelemetryBuffer  2× ArrayDeque<String> (события / метрики), FIFO-вытеснение
+├─ collect/PlayerListener      join / quit / death (MONITOR)
+├─ collect/ErrorCaptureHandler JUL Handler на root Logger, SEVERE + Throwable, rate limit
+├─ collect/StackTraceFormatter голова 20 строк + хвост 15, середина вырезается
+├─ collect/MetricsTask         async: TPS/MSPT/online; sync-сэмплер entities
+├─ transport/BatchSender       async, AtomicBoolean inFlight, повторы и backoff
+├─ transport/HttpTransport     HttpURLConnection, keep-alive, fixed-length streaming
+├─ util/UuidHasher             SHA-256 + соль
+└─ command/DiagCommand         /diag status | token | reload
+```
+
+### Отправка и повторы
+
+- Пока предыдущий запрос не завершён, новый не создаётся.
+- Неудачный батч (сетевая ошибка, 5xx, 429) хранится как готовая строка (≤ 60 KB) и повторяется **с тем же `batchId`**. Бэкенд отбрасывает дубли по `batchId`, поэтому таймаут после успешной записи не удвоит данные. Буфер в это время копит новые события в пределах своего лимита, лишнее вытесняется.
+- Задержка между повторами растёт экспоненциально, до 5 минут. На 429 выдерживается `Retry-After`.
+- 400 / 413: батч отбрасывается. 401 / 403 (токен недействителен или подписка неактивна): батч отбрасывается, пауза 60 с. В лог пишется только смена состояния, токен — никогда.
+
+### Бюджет памяти
+
+| Что | Обычно | Худший случай |
+|---|---|---|
+| Буфер событий (500) | ~75 KB | ~3,5 MB (500 ошибок по ~7 KB) |
+| Буфер метрик (60) | ~5 KB | ~5 KB |
+| Неотправленный батч | 0 | 60 KB |
+| StringBuilder батча (переиспользуется) | 8–16 KB | 60 KB на время сборки |
+
+## Ограничения
+
+- Перехватываются ошибки, записанные через `java.util.logging`: логгеры плагинов, `Could not pass event …`, ошибки команд. Ошибки ядра, которые пишутся только через Log4j, не видны: для этого нужен log4j-core, а он не входит в публичный API. Исключения в задачах планировщика Paper пишет с уровнем WARNING, поэтому они тоже не собираются.
+- При выключении сервера неотправленный остаток (до одного интервала) теряется: в `onDisable` сетевые вызовы из основного потока запрещены.
+- Folia не поддерживается.
+
+## Сборка
+
+Нужен JDK 17+.
+
+```bash
+./gradlew build
+```
+
+Jar появится в `build/libs/MCDiag-Agent-<version>.jar`. Тесты (`./gradlew test`) проверяют экранирование JSON, обрезку стектрейса, буфер и лимиты батча. Тест сборки батча пишет пример тела в `build/sample-batch.json`.

@@ -1,0 +1,15 @@
+name: MCDiag
+version: '${version}'
+main: net.mcdiag.agent.McDiagPlugin
+api-version: '1.20'
+description: Lightweight telemetry agent for MCDiag
+website: https://github.com/nezuma/mcdiag-plugin
+commands:
+  diag:
+    description: MCDiag agent status and control
+    usage: /diag <status|token|reload>
+    permission: mcdiag.admin
+permissions:
+  mcdiag.admin:
+    description: Access to /diag
+    default: op
