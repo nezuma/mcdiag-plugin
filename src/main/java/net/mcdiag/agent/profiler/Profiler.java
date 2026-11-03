@@ -43,7 +43,6 @@ public final class Profiler implements Runnable {
     private final PluginLookup lookup;
     private final StackAttributor attributor;
     private final AsyncTracker async;
-    private final JvmStats jvm = new JvmStats();
 
     private final long[] ringTick = new long[RING];
     private final String[] ringOwner = new String[RING];
@@ -194,7 +193,8 @@ public final class Profiler implements Runnable {
             return;
         }
         int online = Bukkit.getOnlinePlayers().size();
-        String json = done.toJson(stats, online, jvm.snapshotJson(), windowSpikes);
+        // Процессор и память теперь уходят отдельным системным срезом (SystemStats).
+        String json = done.toJson(stats, online, null, windowSpikes);
         windowSpikes.clear();
         last = new Summary(done.startMs(), stats, done.busyMs(), done.coreMs(), done.top(10));
         if (plugin.cfg().canSend()) {
@@ -260,6 +260,11 @@ public final class Profiler implements Runnable {
             return -1;
         }
         return cpu / 1_000_000.0 / elapsed * 100;
+    }
+
+    /** Индекс «пакет → плагин»: общий, только чтение — годится и для разовых снимков. */
+    public PluginLookup lookup() {
+        return lookup;
     }
 
     public int cachedClasses() {

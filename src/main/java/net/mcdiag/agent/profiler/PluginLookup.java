@@ -23,7 +23,7 @@ import org.bukkit.plugin.Plugin;
  * в нескольких jar (незатенённая библиотека), не приписывается никому: тогда сэмпл достанется
  * плагину, который вызвал библиотеку, — его кадр ниже по стеку.
  */
-final class PluginLookup implements Function<String, String> {
+public final class PluginLookup implements Function<String, String> {
 
     /** Пакет есть в нескольких jar */
     private static final String AMBIGUOUS = "";
@@ -32,12 +32,12 @@ final class PluginLookup implements Function<String, String> {
     private volatile Map<String, String> packages = Map.of();
     private volatile List<Prefix> mainPackages = List.of();
 
-    PluginLookup(Logger log) {
+    public PluginLookup(Logger log) {
         this.log = log;
     }
 
     /** Строит индекс заново. Вызывается из потока профилировщика: читает только оглавления jar. */
-    void rebuild(Plugin[] plugins) {
+    public void rebuild(Plugin[] plugins) {
         Map<String, String> index = new HashMap<>(4096);
         List<Prefix> mains = new ArrayList<>();
         for (Plugin p : plugins) {

@@ -21,6 +21,8 @@ public final class HttpTransport {
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int READ_TIMEOUT_MS = 10_000;
     private static final int MAX_ERROR_BODY = 1024;
+    /** Ответ на успешный батч короткий; команды поддержки умещаются с большим запасом */
+    private static final int MAX_OK_BODY = 16 * 1024;
     private static final Pattern ERROR_CODE = Pattern.compile("\"code\"\\s*:\\s*\"([A-Z_]{1,64})\"");
 
     private final String userAgent;
@@ -54,18 +56,22 @@ public final class HttpTransport {
         int status = conn.getResponseCode();
         long retryAfterSec = parseRetryAfter(conn.getHeaderField("Retry-After"));
         String errorCode = null;
+        String okBody = null;
         // Тело дочитываем до конца — только так соединение вернётся в keep-alive кеш.
         try (InputStream in = status < 400 ? conn.getInputStream() : conn.getErrorStream()) {
             if (in != null) {
-                String head = new String(in.readNBytes(MAX_ERROR_BODY), StandardCharsets.UTF_8);
+                String head = new String(in.readNBytes(status < 400 ? MAX_OK_BODY : MAX_ERROR_BODY),
+                        StandardCharsets.UTF_8);
                 in.transferTo(OutputStream.nullOutputStream());
                 if (status >= 400) {
                     Matcher m = ERROR_CODE.matcher(head);
                     errorCode = m.find() ? m.group(1) : null;
+                } else {
+                    okBody = head;
                 }
             }
         }
-        return new Response(status, retryAfterSec, errorCode);
+        return new Response(status, retryAfterSec, errorCode, okBody);
     }
 
     private static long parseRetryAfter(String header) {
@@ -79,7 +85,10 @@ public final class HttpTransport {
         }
     }
 
-    /** @param retryAfterSec -1, если заголовка нет; errorCode — {@code error.code} из конверта бэкенда */
-    public record Response(int status, long retryAfterSec, String errorCode) {
+    /**
+     * @param retryAfterSec -1, если заголовка нет; errorCode — {@code error.code} из конверта бэкенда
+     * @param body          тело успешного ответа (команды поддержки), иначе null
+     */
+    public record Response(int status, long retryAfterSec, String errorCode, String body) {
     }
 }

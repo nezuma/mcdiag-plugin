@@ -3,10 +3,12 @@ package net.mcdiag.agent.transport;
 import java.io.IOException;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 import net.mcdiag.agent.McDiagPlugin;
 import net.mcdiag.agent.buffer.TelemetryBuffer;
 import net.mcdiag.agent.config.AgentConfig;
+import net.mcdiag.agent.remote.RemoteCommandParser;
 
 /**
  * Async-таск отправки. Пока предыдущий запрос не завершён, новый не создаётся ({@link #inFlight}).
@@ -23,10 +25,15 @@ public final class BatchSender implements Runnable {
     private static final long PENDING_TTL_MS = 23L * 3600 * 1000;
     private static final long MAX_BACKOFF_MS = 5 * 60 * 1000;
     private static final long AUTH_BACKOFF_MS = 60 * 1000;
+    /**
+     * Пустой батч-«пульс», если отправлять нечего: панель видит, что сервер на связи, и может
+     * передать команды поддержки, даже если метрики выключены.
+     */
+    private static final long HEARTBEAT_MS = 30 * 1000;
 
     private final McDiagPlugin plugin;
     private final HttpTransport transport;
-    private final String pluginJson;
+    private final Supplier<String> pluginJson;
     private final Logger log;
     private final AtomicBoolean inFlight = new AtomicBoolean();
     /** Переиспользуется между батчами — не аллоцируем 64 KB каждые 10 секунд. */
@@ -40,10 +47,11 @@ public final class BatchSender implements Runnable {
 
     private volatile int pendingItems;
     private volatile long lastSuccessAt;
+    private long lastAttemptAt;
     private volatile String lastResult = "not sent yet";
     private volatile long sentBatches;
 
-    public BatchSender(McDiagPlugin plugin, HttpTransport transport, String pluginJson) {
+    public BatchSender(McDiagPlugin plugin, HttpTransport transport, Supplier<String> pluginJson) {
         this.plugin = plugin;
         this.transport = transport;
         this.pluginJson = pluginJson;
@@ -98,6 +106,7 @@ public final class BatchSender implements Runnable {
         int status = res.status();
         if (status >= 200 && status < 300) {
             clearPending();
+            plugin.remote().accept(RemoteCommandParser.parse(res.body()));
             failures = 0;
             sentBatches++;
             lastSuccessAt = now;
@@ -124,13 +133,15 @@ public final class BatchSender implements Runnable {
     /** @return false, если отправлять нечего */
     private boolean buildBatch(AgentConfig cfg, long now) {
         TelemetryBuffer buffer = plugin.buffer();
-        if (buffer.isEmpty()) {
+        boolean heartbeat = now - lastAttemptAt >= HEARTBEAT_MS;
+        if (buffer.isEmpty() && !heartbeat) {
             return false;
         }
-        int items = assemble(sb, buffer, cfg.maxBatchEvents(), UUID.randomUUID(), now, pluginJson);
-        if (items == 0) {
+        int items = assemble(sb, buffer, cfg.maxBatchEvents(), UUID.randomUUID(), now, pluginJson.get());
+        if (items == 0 && !heartbeat) {
             return false;
         }
+        lastAttemptAt = now;
         pendingBody = sb.toString();
         pendingCreatedAt = now;
         pendingItems = items;
@@ -144,38 +155,61 @@ public final class BatchSender implements Runnable {
 
     /**
      * Собирает тело IngestBatch в {@code sb}, забирая элементы из буфера в пределах лимитов бэкенда.
+     * Ответы на команды поддержки идут первыми: они маленькие и их ждёт человек.
      *
-     * @return сколько событий и точек метрик попало в батч
+     * @return сколько элементов попало в батч (0 — пустой «пульс»)
      */
     static int assemble(StringBuilder sb, TelemetryBuffer buffer, int maxEvents, UUID batchId, long now,
                         String pluginJson) {
         sb.setLength(0);
         sb.append("{\"batchId\":\"").append(batchId)
                 .append("\",\"sentAt\":").append(now)
-                .append(",\"plugin\":").append(pluginJson)
-                .append(",\"events\":[");
-        int budget = MAX_BODY_CHARS - sb.length() - 32;
-        int start = sb.length();
-        int events = buffer.drainEvents(sb, maxEvents, budget);
-        budget -= sb.length() - start;
-        sb.append("],\"metrics\":[");
-        start = sb.length();
-        int metrics = buffer.drainMetrics(sb, budget);
-        budget -= sb.length() - start;
-        int profiles = 0;
-        if (budget > 512) {
-            sb.append("],\"profile\":[");
-            start = sb.length();
-            profiles = buffer.drainProfiles(sb, budget - 32);
-            budget -= sb.length() - start;
-        }
-        String inventory = budget > 512 ? buffer.takeInventory(budget - 32) : null;
+                .append(",\"plugin\":").append(pluginJson);
+        int[] budget = {MAX_BODY_CHARS - sb.length() - 64};
+        int items = optional(sb, "results", budget, buffer::drainResults);
+        items += section(sb, "events", budget, (out, max) -> buffer.drainEvents(out, maxEvents, max));
+        items += section(sb, "metrics", budget, buffer::drainMetrics);
+        items += optional(sb, "profile", budget, buffer::drainProfiles);
+        items += optional(sb, "system", budget, buffer::drainSystem);
+        String inventory = budget[0] > 512 ? buffer.takeInventory(budget[0] - 32) : null;
         if (inventory != null) {
-            sb.append("],\"inventory\":").append(inventory).append('}');
-        } else {
-            sb.append("]}");
+            sb.append(",\"inventory\":").append(inventory);
+            items++;
         }
-        return events + metrics + profiles + (inventory != null ? 1 : 0);
+        sb.append('}');
+        return items;
+    }
+
+    private interface Drainer {
+        int drain(StringBuilder out, int maxChars);
+    }
+
+    /** Обязательный массив: пишется всегда, даже пустой. */
+    private static int section(StringBuilder sb, String name, int[] budget, Drainer drainer) {
+        sb.append(",\"").append(name).append("\":[");
+        int start = sb.length();
+        int n = drainer.drain(sb, Math.max(0, budget[0]));
+        budget[0] -= sb.length() - start;
+        sb.append(']');
+        return n;
+    }
+
+    /** Необязательный массив: не пишется, если пуст или места мало (старый бэкенд о нём не знает). */
+    private static int optional(StringBuilder sb, String name, int[] budget, Drainer drainer) {
+        if (budget[0] <= 512) {
+            return 0;
+        }
+        int mark = sb.length();
+        sb.append(",\"").append(name).append("\":[");
+        int start = sb.length();
+        int n = drainer.drain(sb, budget[0] - 32);
+        if (n == 0) {
+            sb.setLength(mark);
+            return 0;
+        }
+        budget[0] -= sb.length() - start;
+        sb.append(']');
+        return n;
     }
 
     private void clearPending() {

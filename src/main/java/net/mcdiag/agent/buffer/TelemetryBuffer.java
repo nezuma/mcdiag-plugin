@@ -15,6 +15,9 @@ public final class TelemetryBuffer {
     public static final int MAX_METRICS = 60;
     /** Минутные срезы профилировщика: бэкенд принимает ≤ 10 на батч, 10 минут без связи. */
     public static final int MAX_PROFILES = 10;
+    /** Системные срезы (раз в минуту) и ответы на команды поддержки */
+    public static final int MAX_SYSTEM = 10;
+    public static final int MAX_RESULTS = 10;
     /** Защита от элемента, который никогда не влезет в батч: такой выбрасывается при чтении. */
     private static final int MAX_ELEMENT_CHARS = 32 * 1024;
 
@@ -22,6 +25,8 @@ public final class TelemetryBuffer {
     private final ArrayDeque<String> events;
     private final ArrayDeque<String> metrics = new ArrayDeque<>(MAX_METRICS);
     private final ArrayDeque<String> profiles = new ArrayDeque<>(MAX_PROFILES);
+    private final ArrayDeque<String> system = new ArrayDeque<>(MAX_SYSTEM);
+    private final ArrayDeque<String> results = new ArrayDeque<>(MAX_RESULTS);
     /** Список плагинов сервера: важна только последняя версия */
     private String inventory;
     private int maxEvents;
@@ -55,12 +60,24 @@ public final class TelemetryBuffer {
     }
 
     public void addProfile(String json) {
+        addBounded(profiles, MAX_PROFILES, json);
+    }
+
+    public void addSystem(String json) {
+        addBounded(system, MAX_SYSTEM, json);
+    }
+
+    public void addResult(String json) {
+        addBounded(results, MAX_RESULTS, json);
+    }
+
+    private void addBounded(ArrayDeque<String> queue, int max, String json) {
         synchronized (lock) {
-            if (profiles.size() >= MAX_PROFILES) {
-                chars -= profiles.pollFirst().length();
+            if (queue.size() >= max) {
+                chars -= queue.pollFirst().length();
                 dropped++;
             }
-            profiles.addLast(json);
+            queue.addLast(json);
             chars += json.length();
         }
     }
@@ -108,6 +125,18 @@ public final class TelemetryBuffer {
         }
     }
 
+    public int drainSystem(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(system, sb, MAX_SYSTEM, maxChars);
+        }
+    }
+
+    public int drainResults(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(results, sb, MAX_RESULTS, maxChars);
+        }
+    }
+
     /** Забирает список плагинов, если он есть и помещается в {@code maxChars}; иначе null. */
     public String takeInventory(int maxChars) {
         synchronized (lock) {
@@ -123,7 +152,8 @@ public final class TelemetryBuffer {
 
     public boolean isEmpty() {
         synchronized (lock) {
-            return events.isEmpty() && metrics.isEmpty() && profiles.isEmpty() && inventory == null;
+            return events.isEmpty() && metrics.isEmpty() && profiles.isEmpty() && system.isEmpty()
+                    && results.isEmpty() && inventory == null;
         }
     }
 

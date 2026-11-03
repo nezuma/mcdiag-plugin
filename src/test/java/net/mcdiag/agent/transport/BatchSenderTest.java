@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 
 class BatchSenderTest {
 
-    private static final String PLUGIN = "{\"version\":\"0.1.0\",\"core\":\"leaf\",\"mcVersion\":\"1.21.4\"}";
+    private static final String PLUGIN = "{\"version\":\"0.3.0\",\"core\":\"paper\",\"mcVersion\":\"1.19.4\",\"batchIntervalSec\":10}";
 
     @Test
     void assemblesIngestBatchAndWritesSample() throws IOException {
@@ -43,8 +43,14 @@ class BatchSenderTest {
                 + "{\"n\":\"~entities\",\"p\":0.2}]}]}");
         buffer.setInventory("[{\"n\":\"WorldGuard\",\"v\":\"7.0.9\",\"on\":true},{\"n\":\"MCDiag\",\"v\":\"0.2.0\",\"on\":true}]");
 
+        buffer.addSystem("{\"ts\":" + minute + ",\"cpu\":0.31,\"sys\":0.55,\"ram\":11000,\"ramMax\":16000,"
+                + "\"heap\":2048,\"heapMax\":4096,\"gc\":120,\"thr\":70,\"disk\":40000,\"diskMax\":100000,\"up\":3600}");
+        buffer.addResult("{\"id\":\"0f8fad5b-d9cb-469f-a165-70867728950e\",\"type\":\"ping\",\"ts\":" + now
+                + ",\"ok\":true,\"data\":{\"agent\":\"0.3.0\",\"sentBatches\":5}}");
+        buffer.addMetric("{\"ts\":" + (now / 5000 * 5000 - 5000) + ",\"tps\":20,\"mspt\":11.2,\"online\":3,\"entities\":2840,\"chunks\":900,\"tiles\":120}");
+
         StringBuilder sb = new StringBuilder();
-        assertEquals(7, BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), now, PLUGIN));
+        assertEquals(10, BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), now, PLUGIN));
         assertTrue(buffer.isEmpty());
         String body = sb.toString();
         assertTrue(body.chars().allMatch(c -> c >= 0x20 && c < 0x7f), "body must be printable ASCII");
@@ -66,5 +72,12 @@ class BatchSenderTest {
         assertTrue(sb.length() <= 64 * 1024, "body " + sb.length());
         assertEquals(500 - 10, buffer.stats().events(), "only what fits is drained");
         assertTrue(sb.toString().endsWith("]}"), "closed even without room for profiles");
+    }
+
+    @Test
+    void emptyBufferGivesValidHeartbeat() {
+        StringBuilder sb = new StringBuilder();
+        assertEquals(0, BatchSender.assemble(sb, new TelemetryBuffer(10), 100, UUID.randomUUID(), 1, PLUGIN));
+        assertTrue(sb.toString().endsWith(",\"events\":[],\"metrics\":[]}"), sb.toString());
     }
 }

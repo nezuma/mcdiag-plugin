@@ -16,6 +16,8 @@ public final class MetricsTask implements Runnable {
 
     private final McDiagPlugin plugin;
     private volatile int entities = -1;
+    private volatile int chunks = -1;
+    private volatile int tiles = -1;
 
     public MetricsTask(McDiagPlugin plugin) {
         this.plugin = plugin;
@@ -39,6 +41,10 @@ public final class MetricsTask implements Runnable {
         if (snapshot >= 0) {
             sb.append(",\"entities\":").append(snapshot);
         }
+        int loaded = chunks;
+        if (loaded >= 0) {
+            sb.append(",\"chunks\":").append(loaded).append(",\"tiles\":").append(Math.max(0, tiles));
+        }
         plugin.buffer().addMetric(sb.append('}').toString());
     }
 
@@ -49,10 +55,16 @@ public final class MetricsTask implements Runnable {
                 return;
             }
             int total = 0;
+            int loadedChunks = 0;
+            int tileEntities = 0;
             for (World world : Bukkit.getWorlds()) {
                 total += world.getEntityCount();
+                loadedChunks += world.getChunkCount();
+                tileEntities += world.getTileEntityCount();
             }
             entities = total;
+            chunks = loadedChunks;
+            tiles = tileEntities;
         };
     }
 }

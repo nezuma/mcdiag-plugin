@@ -6,11 +6,13 @@ import net.mcdiag.agent.buffer.TelemetryBuffer;
 import net.mcdiag.agent.collect.ErrorCaptureHandler;
 import net.mcdiag.agent.collect.MetricsTask;
 import net.mcdiag.agent.collect.PlayerListener;
+import net.mcdiag.agent.collect.SystemStats;
 import net.mcdiag.agent.command.DiagCommand;
 import net.mcdiag.agent.config.AgentConfig;
 import net.mcdiag.agent.json.Json;
 import net.mcdiag.agent.profiler.Profiler;
 import net.mcdiag.agent.profiler.TickMonitor;
+import net.mcdiag.agent.remote.RemoteCommands;
 import net.mcdiag.agent.transport.BatchSender;
 import net.mcdiag.agent.transport.HttpTransport;
 import net.mcdiag.agent.util.UuidHasher;
@@ -32,6 +34,9 @@ public final class McDiagPlugin extends JavaPlugin {
     private Thread mainThread;
     private TickMonitor tickMonitor;
     private volatile Profiler profiler;
+    private RemoteCommands remote;
+    private SystemStats system;
+    private String pluginStatic;
 
     @Override
     public void onEnable() {
@@ -39,7 +44,12 @@ public final class McDiagPlugin extends JavaPlugin {
         loadConfigSnapshot();
         buffer = new TelemetryBuffer(cfg.maxBufferSize());
         metrics = new MetricsTask(this);
-        sender = new BatchSender(this, new HttpTransport("MCDiag-Agent/" + getDescription().getVersion()), pluginJson());
+        pluginStatic = pluginJson();
+        remote = new RemoteCommands(this);
+        system = new SystemStats(json -> buffer.addSystem(json));
+        // Интервал отправки меняется по /diag reload, поэтому блок plugin собирается на каждый батч.
+        sender = new BatchSender(this, new HttpTransport("MCDiag-Agent/" + getDescription().getVersion()),
+                () -> pluginStatic.substring(0, pluginStatic.length() - 1) + ",\"batchIntervalSec\":" + cfg.batchIntervalSec() + "}");
 
         mainThread = Thread.currentThread();
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
@@ -63,6 +73,9 @@ public final class McDiagPlugin extends JavaPlugin {
     public void onDisable() {
         Bukkit.getScheduler().cancelTasks(this);
         stopProfiler();
+        if (remote != null) {
+            remote.shutdown();
+        }
         // Обязательно снимаем хендлер: иначе root Logger держит наш ClassLoader после /reload.
         if (errorHandler != null) {
             Logger.getLogger("").removeHandler(errorHandler);
@@ -99,6 +112,18 @@ public final class McDiagPlugin extends JavaPlugin {
         return sender;
     }
 
+    public RemoteCommands remote() {
+        return remote;
+    }
+
+    public Thread mainThread() {
+        return mainThread;
+    }
+
+    public TickMonitor tickMonitor() {
+        return tickMonitor;
+    }
+
     /** @return профилировщик или null, если он выключен в конфиге */
     public Profiler profiler() {
         return profiler;
@@ -124,6 +149,10 @@ public final class McDiagPlugin extends JavaPlugin {
         scheduler.runTaskTimer(this, metrics.entitySampler(), metricsPeriod - 1, metricsPeriod);
         scheduler.runTaskTimerAsynchronously(this, metrics, metricsPeriod, metricsPeriod);
         scheduler.runTaskTimerAsynchronously(this, sender, batchPeriod, batchPeriod);
+        if (cfg.collectMetrics()) {
+            // Процессор, память, диск — раз в минуту, независимо от профилировщика.
+            scheduler.runTaskTimerAsynchronously(this, system, 60 * TICKS_PER_SEC, 60 * TICKS_PER_SEC);
+        }
 
         tickMonitor.setSpikeThreshold(cfg.spikeThresholdMs());
         if (cfg.profilerEnabled()) {
