@@ -26,6 +26,10 @@ public record AgentConfig(
         boolean collectDeaths,
         boolean collectErrors,
         boolean collectMetrics,
+        boolean profilerEnabled,
+        int profilerIntervalMs,
+        int spikeThresholdMs,
+        boolean profilerAsync,
         String problem) {
 
     /** Формат токена из openapi: {@code mcd_<serverId>_<uuid>}. */
@@ -53,6 +57,7 @@ public record AgentConfig(
         }
 
         ConfigurationSection collect = c.getConfigurationSection("collect");
+        ConfigurationSection profiler = c.getConfigurationSection("profiler");
         return new AgentConfig(
                 url,
                 token,
@@ -67,6 +72,10 @@ public record AgentConfig(
                 flag(collect, "deaths"),
                 flag(collect, "errors"),
                 flag(collect, "metrics"),
+                flag(profiler, "enabled"),
+                clamp(profiler == null ? 20 : profiler.getInt("interval_ms", 20), 10, 200),
+                clamp(profiler == null ? 100 : profiler.getInt("spike_threshold_ms", 100), 50, 10_000),
+                flag(profiler, "async"),
                 problem);
     }
 

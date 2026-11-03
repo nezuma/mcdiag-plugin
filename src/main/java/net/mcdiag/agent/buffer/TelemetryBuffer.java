@@ -13,12 +13,17 @@ public final class TelemetryBuffer {
 
     /** Бэкенд принимает ≤ 60 точек на батч; 60 × 5 с = 5 минут без связи. */
     public static final int MAX_METRICS = 60;
+    /** Минутные срезы профилировщика: бэкенд принимает ≤ 10 на батч, 10 минут без связи. */
+    public static final int MAX_PROFILES = 10;
     /** Защита от элемента, который никогда не влезет в батч: такой выбрасывается при чтении. */
     private static final int MAX_ELEMENT_CHARS = 32 * 1024;
 
     private final Object lock = new Object();
     private final ArrayDeque<String> events;
     private final ArrayDeque<String> metrics = new ArrayDeque<>(MAX_METRICS);
+    private final ArrayDeque<String> profiles = new ArrayDeque<>(MAX_PROFILES);
+    /** Список плагинов сервера: важна только последняя версия */
+    private String inventory;
     private int maxEvents;
     private long chars;
     private long dropped;
@@ -45,6 +50,27 @@ public final class TelemetryBuffer {
                 dropped++;
             }
             metrics.addLast(json);
+            chars += json.length();
+        }
+    }
+
+    public void addProfile(String json) {
+        synchronized (lock) {
+            if (profiles.size() >= MAX_PROFILES) {
+                chars -= profiles.pollFirst().length();
+                dropped++;
+            }
+            profiles.addLast(json);
+            chars += json.length();
+        }
+    }
+
+    public void setInventory(String json) {
+        synchronized (lock) {
+            if (inventory != null) {
+                chars -= inventory.length();
+            }
+            inventory = json;
             chars += json.length();
         }
     }
@@ -76,15 +102,34 @@ public final class TelemetryBuffer {
         }
     }
 
+    public int drainProfiles(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(profiles, sb, MAX_PROFILES, maxChars);
+        }
+    }
+
+    /** Забирает список плагинов, если он есть и помещается в {@code maxChars}; иначе null. */
+    public String takeInventory(int maxChars) {
+        synchronized (lock) {
+            if (inventory == null || inventory.length() > maxChars) {
+                return null;
+            }
+            String out = inventory;
+            chars -= out.length();
+            inventory = null;
+            return out;
+        }
+    }
+
     public boolean isEmpty() {
         synchronized (lock) {
-            return events.isEmpty() && metrics.isEmpty();
+            return events.isEmpty() && metrics.isEmpty() && profiles.isEmpty() && inventory == null;
         }
     }
 
     public Stats stats() {
         synchronized (lock) {
-            return new Stats(events.size(), maxEvents, metrics.size(), chars, dropped);
+            return new Stats(events.size(), maxEvents, metrics.size(), profiles.size(), chars, dropped);
         }
     }
 
@@ -128,11 +173,11 @@ public final class TelemetryBuffer {
     }
 
     /** Снимок для /diag status. {@code chars} — суммарная длина строк (≈ байты, всё ASCII). */
-    public record Stats(int events, int maxEvents, int metrics, long chars, long dropped) {
+    public record Stats(int events, int maxEvents, int metrics, int profiles, long chars, long dropped) {
 
         /** Грубая оценка: Latin-1 строки — байт на символ + ~56 байт заголовков String/byte[]. */
         public long approxBytes() {
-            return chars + (long) (events + metrics) * 56;
+            return chars + (long) (events + metrics + profiles) * 56;
         }
     }
 }

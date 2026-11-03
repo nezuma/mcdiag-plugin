@@ -34,8 +34,17 @@ class BatchSenderTest {
         buffer.addEvent(net.mcdiag.agent.collect.ErrorCaptureHandlerAccess.toJson(record, now - 500));
         buffer.addMetric("{\"ts\":" + (now / 5000 * 5000) + ",\"tps\":19.98,\"mspt\":12.4,\"online\":3,\"entities\":2841}");
 
+        long minute = now / 60_000 * 60_000 - 60_000;
+        buffer.addProfile("{\"ts\":" + minute + ",\"wall\":60000,\"busy\":18000.5,\"ticks\":1200,\"tickAvg\":15.25,"
+                + "\"tickMax\":180,\"online\":3,\"plugins\":[{\"n\":\"WorldGuard\",\"ms\":6000,\"a\":12.5}],"
+                + "\"core\":{\"entities\":4000,\"chunks\":0,\"blocks\":0,\"network\":0,\"saving\":0,\"other\":8000},"
+                + "\"jvm\":{\"cpu\":0.31,\"sys\":0.55,\"heap\":2048,\"heapMax\":4096,\"gc\":120,\"thr\":70},"
+                + "\"spikes\":[{\"ts\":" + (minute + 5000) + ",\"ms\":380.5,\"top\":[{\"n\":\"WorldGuard\",\"p\":0.72},"
+                + "{\"n\":\"~entities\",\"p\":0.2}]}]}");
+        buffer.setInventory("[{\"n\":\"WorldGuard\",\"v\":\"7.0.9\",\"on\":true},{\"n\":\"MCDiag\",\"v\":\"0.2.0\",\"on\":true}]");
+
         StringBuilder sb = new StringBuilder();
-        assertEquals(5, BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), now, PLUGIN));
+        assertEquals(7, BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), now, PLUGIN));
         assertTrue(buffer.isEmpty());
         String body = sb.toString();
         assertTrue(body.chars().allMatch(c -> c >= 0x20 && c < 0x7f), "body must be printable ASCII");
@@ -56,5 +65,6 @@ class BatchSenderTest {
         assertTrue(items > 0);
         assertTrue(sb.length() <= 64 * 1024, "body " + sb.length());
         assertEquals(500 - 10, buffer.stats().events(), "only what fits is drained");
+        assertTrue(sb.toString().endsWith("]}"), "closed even without room for profiles");
     }
 }

@@ -9,6 +9,8 @@ import net.mcdiag.agent.collect.PlayerListener;
 import net.mcdiag.agent.command.DiagCommand;
 import net.mcdiag.agent.config.AgentConfig;
 import net.mcdiag.agent.json.Json;
+import net.mcdiag.agent.profiler.Profiler;
+import net.mcdiag.agent.profiler.TickMonitor;
 import net.mcdiag.agent.transport.BatchSender;
 import net.mcdiag.agent.transport.HttpTransport;
 import net.mcdiag.agent.util.UuidHasher;
@@ -27,6 +29,9 @@ public final class McDiagPlugin extends JavaPlugin {
     private MetricsTask metrics;
     private BatchSender sender;
     private ErrorCaptureHandler errorHandler;
+    private Thread mainThread;
+    private TickMonitor tickMonitor;
+    private volatile Profiler profiler;
 
     @Override
     public void onEnable() {
@@ -34,9 +39,12 @@ public final class McDiagPlugin extends JavaPlugin {
         loadConfigSnapshot();
         buffer = new TelemetryBuffer(cfg.maxBufferSize());
         metrics = new MetricsTask(this);
-        sender = new BatchSender(this, new HttpTransport("MCDiag-Agent/" + getPluginMeta().getVersion()), pluginJson());
+        sender = new BatchSender(this, new HttpTransport("MCDiag-Agent/" + getDescription().getVersion()), pluginJson());
 
+        mainThread = Thread.currentThread();
         getServer().getPluginManager().registerEvents(new PlayerListener(this), this);
+        tickMonitor = new TickMonitor(cfg.spikeThresholdMs());
+        getServer().getPluginManager().registerEvents(tickMonitor, this);
         errorHandler = new ErrorCaptureHandler(this);
         Logger.getLogger("").addHandler(errorHandler);
 
@@ -54,6 +62,7 @@ public final class McDiagPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         Bukkit.getScheduler().cancelTasks(this);
+        stopProfiler();
         // Обязательно снимаем хендлер: иначе root Logger держит наш ClassLoader после /reload.
         if (errorHandler != null) {
             Logger.getLogger("").removeHandler(errorHandler);
@@ -68,6 +77,7 @@ public final class McDiagPlugin extends JavaPlugin {
         buffer.resize(cfg.maxBufferSize());
         sender.resetBackoff();
         Bukkit.getScheduler().cancelTasks(this);
+        stopProfiler();
         scheduleTasks();
         logState();
         return cfg.problem();
@@ -87,6 +97,11 @@ public final class McDiagPlugin extends JavaPlugin {
 
     public BatchSender sender() {
         return sender;
+    }
+
+    /** @return профилировщик или null, если он выключен в конфиге */
+    public Profiler profiler() {
+        return profiler;
     }
 
     private void loadConfigSnapshot() {
@@ -109,6 +124,21 @@ public final class McDiagPlugin extends JavaPlugin {
         scheduler.runTaskTimer(this, metrics.entitySampler(), metricsPeriod - 1, metricsPeriod);
         scheduler.runTaskTimerAsynchronously(this, metrics, metricsPeriod, metricsPeriod);
         scheduler.runTaskTimerAsynchronously(this, sender, batchPeriod, batchPeriod);
+
+        tickMonitor.setSpikeThreshold(cfg.spikeThresholdMs());
+        if (cfg.profilerEnabled()) {
+            Profiler next = new Profiler(this, mainThread, tickMonitor, cfg.profilerIntervalMs(), cfg.profilerAsync());
+            next.start();
+            profiler = next;
+        }
+    }
+
+    private void stopProfiler() {
+        Profiler current = profiler;
+        profiler = null;
+        if (current != null) {
+            current.stop();
+        }
     }
 
     private void logState() {
@@ -129,7 +159,7 @@ public final class McDiagPlugin extends JavaPlugin {
                 : name.contains("paper") ? "paper"
                 : "other";
         StringBuilder sb = new StringBuilder(96).append("{\"version\":");
-        Json.str(sb, getPluginMeta().getVersion(), 32).append(",\"core\":\"").append(core).append("\",\"mcVersion\":");
+        Json.str(sb, getDescription().getVersion(), 32).append(",\"core\":\"").append(core).append("\",\"mcVersion\":");
         return Json.str(sb, Bukkit.getMinecraftVersion(), 16).append('}').toString();
     }
 }

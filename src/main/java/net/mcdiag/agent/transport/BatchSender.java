@@ -159,9 +159,23 @@ public final class BatchSender implements Runnable {
         int events = buffer.drainEvents(sb, maxEvents, budget);
         budget -= sb.length() - start;
         sb.append("],\"metrics\":[");
+        start = sb.length();
         int metrics = buffer.drainMetrics(sb, budget);
-        sb.append("]}");
-        return events + metrics;
+        budget -= sb.length() - start;
+        int profiles = 0;
+        if (budget > 512) {
+            sb.append("],\"profile\":[");
+            start = sb.length();
+            profiles = buffer.drainProfiles(sb, budget - 32);
+            budget -= sb.length() - start;
+        }
+        String inventory = budget > 512 ? buffer.takeInventory(budget - 32) : null;
+        if (inventory != null) {
+            sb.append("],\"inventory\":").append(inventory).append('}');
+        } else {
+            sb.append("]}");
+        }
+        return events + metrics + profiles + (inventory != null ? 1 : 0);
     }
 
     private void clearPending() {

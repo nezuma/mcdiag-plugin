@@ -4,6 +4,8 @@ import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.SimpleFormatter;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import net.mcdiag.agent.McDiagPlugin;
 import net.mcdiag.agent.json.Json;
 
@@ -16,6 +18,13 @@ public final class ErrorCaptureHandler extends Handler {
     private static final int MAX_MESSAGE = 512;
     private static final int MAX_LOGGER = 128;
     private static final long MINUTE_MS = 60_000;
+    /**
+     * Ошибки плагинов ядро пишет своим логгером: «Could not pass event … to WorldGuard v7.0.9»,
+     * «Plugin X v1.0 generated an exception while executing task». Имя плагина достаём из текста,
+     * чтобы панель могла связать ошибку с плагином.
+     */
+    private static final Pattern PLUGIN_IN_MESSAGE = Pattern.compile(
+            "(?: to | while (?:enabling|disabling|loading) |^Plugin |^Exception in plugin )([A-Za-z0-9_.-][A-Za-z0-9 _.-]{0,63}?) v\\d");
 
     private final McDiagPlugin plugin;
     /** Только для formatMessage: подстановка {0}-параметров и resource bundle. */
@@ -57,13 +66,24 @@ public final class ErrorCaptureHandler extends Handler {
 
         StringBuilder sb = new StringBuilder(StackTraceFormatter.MAX_CHARS + 768);
         sb.append("{\"type\":\"error\",\"ts\":").append(ts);
-        String logger = record.getLoggerName();
+        String logger = loggerOf(record.getLoggerName(), message);
         if (logger != null && !logger.isEmpty()) {
             Json.str(sb.append(",\"logger\":"), logger, MAX_LOGGER);
         }
         Json.str(sb.append(",\"message\":"), message, MAX_MESSAGE);
         Json.str(sb.append(",\"trace\":"), StackTraceFormatter.format(thrown), StackTraceFormatter.MAX_CHARS);
         return sb.append('}').toString();
+    }
+
+    /** Логгер ядра («Minecraft», корневой) заменяем на плагин из текста сообщения, если он там есть. */
+    static String loggerOf(String logger, String message) {
+        boolean generic = logger == null || logger.isEmpty() || logger.equals("Minecraft")
+                || logger.equals("global") || logger.startsWith("net.minecraft") || logger.startsWith("org.bukkit");
+        if (!generic) {
+            return logger;
+        }
+        Matcher m = PLUGIN_IN_MESSAGE.matcher(message);
+        return m.find() ? m.group(1) : logger;
     }
 
     private synchronized boolean acquire(int perMinute) {
