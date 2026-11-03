@@ -1,7 +1,6 @@
 package net.mcdiag.agent.profiler;
 
 import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -17,26 +16,23 @@ import org.bukkit.plugin.Plugin;
 /**
  * Сэмплирующий профилировщик главного потока, по принципу spark.
  *
- * <p>Отдельный daemon-поток раз в {@code intervalMs} снимает стек главного потока и записывает
- * интервал на плагин, чей код ближе всего к вершине стека ({@link StackAttributor}). Главный поток
- * при этом ничего не делает, кроме двух событий тика ({@link TickMonitor}). Раз в минуту итог
- * уходит в буфер одним JSON-срезом ~1–3 KB.
+ * <p>Отдельный daemon-поток периодически снимает стек главного потока ({@link MainThreadSampler})
+ * и записывает прошедшее время на плагин, чей код ближе всего к вершине стека
+ * ({@link StackAttributor}). Сам главный поток делает только два события тика ({@link TickMonitor}).
+ * Раз в минуту итог уходит в буфер одним JSON-срезом ~1–3 KB.
  *
  * <p>Это оценка по сэмплам: плагин, работающий реже интервала, может не попасть в срез вовсе.
  */
 public final class Profiler implements Runnable {
 
     private static final long MINUTE_MS = 60_000;
-    private static final int STACK_DEPTH = 128;
-    /** Сэмплы последних ~20 секунд — чтобы разобрать, кто занимал долгий тик */
-    private static final int RING = 1024;
-    private static final long ASYNC_PERIOD_MS = 1_000;
+    /** CPU потоков накапливается и не теряется, поэтому читать его часто незачем */
+    private static final long ASYNC_PERIOD_MS = 5_000;
+    private static final long SELF_CPU_PERIOD_MS = 5_000;
     private static final long INVENTORY_PERIOD_MS = 30 * MINUTE_MS;
-    private static final long REINDEX_PERIOD_MS = 10 * MINUTE_MS;
     private static final int RECENT_SPIKES = 10;
 
     private final McDiagPlugin plugin;
-    private final Thread mainThread;
     private final TickMonitor ticks;
     private final long intervalMs;
     private final boolean asyncEnabled;
@@ -45,22 +41,18 @@ public final class Profiler implements Runnable {
     private final StackAttributor attributor;
     private final AsyncTracker async;
 
-    private final long[] ringTick = new long[RING];
-    private final String[] ringOwner = new String[RING];
-    private final StackTraceElement[] ringFrame = new StackTraceElement[RING];
+    private final MainThreadSampler sampler;
     /** Лог прикладываем только к первым спайкам минуты: при шторме спайков он был бы одинаковым */
     private static final int SPIKES_WITH_LOGS = 3;
     private static final long SPIKE_LOG_WINDOW_MS = 60_000;
     private static final int SPIKE_LOG_LINES = 20;
     private int sentSpikes;
-    private int ringPos;
 
     private volatile boolean running = true;
     private Thread thread;
     private ProfileWindow window;
     private String[] pluginNames = new String[0];
-    private int pluginCount = -1;
-    private long reindexedAt;
+    private int pluginsHash;
     private long inventoryAt;
     private int inventoryHash;
     private final List<SpikeRecord> windowSpikes = new ArrayList<>();
@@ -73,13 +65,13 @@ public final class Profiler implements Runnable {
 
     public Profiler(McDiagPlugin plugin, Thread mainThread, TickMonitor ticks, long intervalMs, boolean asyncEnabled) {
         this.plugin = plugin;
-        this.mainThread = mainThread;
         this.ticks = ticks;
         this.intervalMs = intervalMs;
         this.asyncEnabled = asyncEnabled;
         this.lookup = new PluginLookup(plugin.getLogger());
         this.attributor = new StackAttributor(lookup);
         this.async = new AsyncTracker(mainThread.getId());
+        this.sampler = new MainThreadSampler(mainThread, ticks, attributor, intervalMs);
     }
 
     public void start() {
@@ -102,54 +94,35 @@ public final class Profiler implements Runnable {
     public void run() {
         long prev = System.nanoTime();
         long nextAsync = 0;
+        long nextSelfCpu = 0;
+        long delay = intervalMs;
         while (running) {
             try {
-                Thread.sleep(intervalMs);
+                Thread.sleep(delay);
             } catch (InterruptedException e) {
                 break;
             }
             try {
                 long now = System.nanoTime();
-                // Вес сэмпла — реально прошедшее время (sleep неточен), но не больше 5 интервалов:
-                // после паузы JVM один сэмпл не должен «съесть» минуту.
-                double weightMs = Math.min((now - prev) / 1_000_000.0, intervalMs * 5.0);
+                // Вес сэмпла — реально прошедшее время (интервал случайный, а sleep неточен).
+                double weightMs = Math.min((now - prev) / 1_000_000.0, sampler.maxWeightMs());
                 prev = now;
                 long wall = System.currentTimeMillis();
                 ensureWindow(wall);
-                sample(weightMs);
+                delay = sampler.sample(window, weightMs);
                 drainSpikes();
                 if (asyncEnabled && wall >= nextAsync) {
                     async.collect(window, attributor, pluginNames, wall);
                     nextAsync = wall + ASYNC_PERIOD_MS;
                 }
-                selfCpuNs = mx.isCurrentThreadCpuTimeSupported() ? mx.getCurrentThreadCpuTime() : -1;
+                if (wall >= nextSelfCpu) {
+                    selfCpuNs = mx.isCurrentThreadCpuTimeSupported() ? mx.getCurrentThreadCpuTime() : -1;
+                    nextSelfCpu = wall + SELF_CPU_PERIOD_MS;
+                }
             } catch (RuntimeException | LinkageError e) {
                 // Профилировщик никогда не должен ронять сервер или свой поток.
                 plugin.getLogger().log(Level.FINE, "profiler sample failed", e);
             }
-        }
-    }
-
-    private void sample(double weightMs) {
-        boolean inTick = ticks.inTick();
-        long tick = ticks.tickSeq();
-        ThreadInfo info = mx.getThreadInfo(mainThread.getId(), STACK_DEPTH);
-        if (info == null) {
-            return;
-        }
-        StackTraceElement[] stack = info.getStackTrace();
-        // Между тиками главный поток спит до следующего — это не нагрузка.
-        if (!inTick && FrameClassifier.isWaiting(info.getThreadState(), stack.length > 0 ? stack[0] : null)) {
-            window.addIdle(weightMs);
-            return;
-        }
-        String owner = attributor.attribute(stack);
-        window.addBusy(owner, weightMs);
-        if (inTick) {
-            ringTick[ringPos] = tick;
-            ringOwner[ringPos] = owner;
-            ringFrame[ringPos] = ProfileCapture.hotElement(stack);
-            ringPos = (ringPos + 1) % RING;
         }
     }
 
@@ -159,22 +132,15 @@ public final class Profiler implements Runnable {
         while ((spike = ticks.pollSpike()) != null) {
             List<String> owners = new ArrayList<>();
             List<String> frames = new ArrayList<>();
-            for (int i = 0; i < RING; i++) {
-                if (ringTick[i] == spike.tick() && ringOwner[i] != null) {
-                    owners.add(ringOwner[i]);
-                    if (ringFrame[i] != null) {
-                        frames.add(ProfileCapture.frameName(ringFrame[i]));
-                    }
-                }
-            }
+            sampler.collect(spike.tick(), owners, frames);
             SpikeRecord record = owners.isEmpty()
                     ? new SpikeRecord(spike.startedAt(), spike.ms(), List.of())
                     : SpikeRecord.of(spike.startedAt(), spike.ms(), owners);
             if (plugin.panel().richSpikes()) {
                 // Новая панель: спайк уходит сразу с ближайшим батчем, а не с минутным срезом.
-                boolean withLogs = sentSpikes < SPIKES_WITH_LOGS && plugin.cfg().spikeLogs();
-                List<LogRing.Line> logs = withLogs
-                        ? plugin.logRing().recent(spike.startedAt() - SPIKE_LOG_WINDOW_MS, SPIKE_LOG_LINES)
+                LogRing ring = plugin.logRing();
+                List<LogRing.Line> logs = ring != null && sentSpikes < SPIKES_WITH_LOGS
+                        ? ring.recent(spike.startedAt() - SPIKE_LOG_WINDOW_MS, SPIKE_LOG_LINES)
                         : List.of();
                 SpikeRecord rich = new SpikeRecord(record.ts(), record.ms(), record.top(),
                         frames.isEmpty() ? List.of() : SpikeRecord.shares(frames, SpikeRecord.MAX_HOT), logs);
@@ -228,11 +194,12 @@ public final class Profiler implements Runnable {
     /** Список плагинов: индекс пакетов, имена для асинхронных потоков, инвентарь для панели. */
     private void refreshPlugins(long wall) {
         Plugin[] plugins = Bukkit.getPluginManager().getPlugins();
-        if (plugins.length != pluginCount || wall - reindexedAt > REINDEX_PERIOD_MS) {
+        // Индекс читает оглавления всех jar: только если набор плагинов действительно изменился.
+        int setHash = pluginSetHash(plugins);
+        if (setHash != pluginsHash) {
             lookup.rebuild(plugins);
             attributor.reset();
-            pluginCount = plugins.length;
-            reindexedAt = wall;
+            pluginsHash = setHash;
             pluginNames = Arrays.stream(plugins).map(Plugin::getName).filter(ProfileWindow::validName)
                     .toArray(String[]::new);
         }
@@ -261,6 +228,15 @@ public final class Profiler implements Runnable {
         }
     }
 
+    private static int pluginSetHash(Plugin[] plugins) {
+        int hash = 1;
+        for (Plugin p : plugins) {
+            // Сумма, а не цепочка: порядок плагинов роли не играет.
+            hash += p.getName().hashCode() * 31 + String.valueOf(p.getDescription().getVersion()).hashCode();
+        }
+        return hash;
+    }
+
     public Summary lastSummary() {
         return last;
     }
@@ -271,10 +247,6 @@ public final class Profiler implements Runnable {
         }
     }
 
-    public long intervalMs() {
-        return intervalMs;
-    }
-
     /** Доля одного ядра, которую съел сам профилировщик с момента запуска, %. */
     public double overheadPct() {
         long cpu = selfCpuNs;
@@ -283,6 +255,23 @@ public final class Profiler implements Runnable {
             return -1;
         }
         return cpu / 1_000_000.0 / elapsed * 100;
+    }
+
+    /** Снимков стека в секунду с момента запуска. */
+    public double stackReadsPerSec() {
+        long elapsed = System.currentTimeMillis() - startedAt;
+        return elapsed <= 0 ? 0 : sampler.stackReads() * 1000.0 / elapsed;
+    }
+
+    /** Доля времени, которую занимают снимки стека, %. */
+    public double samplingPct() {
+        long elapsed = System.currentTimeMillis() - startedAt;
+        return elapsed <= 0 ? 0 : sampler.stackReadNanos() / 1_000_000.0 / elapsed * 100;
+    }
+
+    /** На Java 19+ снимок стека не останавливает остальные потоки. */
+    public boolean usesHandshake() {
+        return sampler.usesHandshake();
     }
 
     /** Индекс «пакет → плагин»: общий, только чтение — годится и для разовых снимков. */

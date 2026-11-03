@@ -43,7 +43,7 @@ public final class McDiagPlugin extends JavaPlugin {
     private String pluginStatic;
     private final PanelState panel = new PanelState();
     private volatile TextMask mask;
-    private LogRing logRing;
+    private volatile LogRing logRing;
 
     @Override
     public void onEnable() {
@@ -64,8 +64,6 @@ public final class McDiagPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(tickMonitor, this);
         errorHandler = new ErrorCaptureHandler(this);
         Logger.getLogger("").addHandler(errorHandler);
-        logRing = new LogRing(mask);
-        Logger.getLogger("").addHandler(logRing);
         getServer().getPluginManager().registerEvents(new ChatListener(this), this);
 
         PluginCommand command = getCommand("diag");
@@ -91,10 +89,7 @@ public final class McDiagPlugin extends JavaPlugin {
             Logger.getLogger("").removeHandler(errorHandler);
             errorHandler = null;
         }
-        if (logRing != null) {
-            Logger.getLogger("").removeHandler(logRing);
-            logRing = null;
-        }
+        removeLogRing();
     }
 
     /** @return проблема конфигурации или null */
@@ -175,9 +170,31 @@ public final class McDiagPlugin extends JavaPlugin {
         }
         cfg = next;
         mask = new TextMask(next.hiddenCommands());
+        if (logRing != null) {
+            logRing.setMask(mask);
+        }
+    }
+
+    /** Хендлер стоит на каждой строке лога сервера, поэтому без спайков с логами его нет вовсе. */
+    private void syncLogRing() {
+        if (!cfg.profilerEnabled() || !cfg.spikeLogs()) {
+            removeLogRing();
+        } else if (logRing == null) {
+            logRing = new LogRing(mask, panel::richSpikes);
+            Logger.getLogger("").addHandler(logRing);
+        }
+    }
+
+    private void removeLogRing() {
+        LogRing ring = logRing;
+        logRing = null;
+        if (ring != null) {
+            Logger.getLogger("").removeHandler(ring);
+        }
     }
 
     private void scheduleTasks() {
+        syncLogRing();
         BukkitScheduler scheduler = Bukkit.getScheduler();
         long metricsPeriod = cfg.metricsIntervalSec() * TICKS_PER_SEC;
         long batchPeriod = cfg.batchIntervalSec() * TICKS_PER_SEC;

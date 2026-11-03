@@ -51,6 +51,10 @@ public final class TextMask {
 
     /** Токены и IP в обычном тексте: чат, строки лога. */
     public String text(String value) {
+        // Без точки нет IP, без «mcd_» нет токена: большинство строк обходятся без регулярок.
+        if (value.indexOf('.') < 0 && !value.contains("mcd_")) {
+            return value;
+        }
         return IPV4.matcher(TOKEN.matcher(value).replaceAll(HIDDEN)).replaceAll(HIDDEN);
     }
 

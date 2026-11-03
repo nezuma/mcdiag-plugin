@@ -81,7 +81,9 @@ public final class DiagCommand implements TabExecutor {
             sender.sendMessage(" Profiler: off");
         } else {
             double overhead = p.overheadPct();
-            sender.sendMessage(" Profiler: every " + p.intervalMs() + " ms"
+            sender.sendMessage(" Profiler: " + fmt(p.stackReadsPerSec(), 1) + " stack reads/s"
+                    + (p.usesHandshake() ? " (no JVM stop)" : " (JVM stop, Java 19+ avoids it)")
+                    + ", " + fmt(p.samplingPct(), 3) + "% of time"
                     + (overhead >= 0 ? ", own CPU " + fmt(overhead, 2) + "% of one core" : "")
                     + ", " + p.cachedClasses() + " classes cached");
         }

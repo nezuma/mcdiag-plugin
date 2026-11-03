@@ -1,5 +1,7 @@
 package net.mcdiag.agent.collect;
 
+import java.util.ArrayList;
+import java.util.List;
 import net.mcdiag.agent.McDiagPlugin;
 import net.mcdiag.agent.json.Json;
 import org.bukkit.Bukkit;
@@ -7,8 +9,8 @@ import org.bukkit.World;
 
 /**
  * Метрики сервера. {@link #run()} выполняется асинхронно: TPS, MSPT и online читаются из
- * потокобезопасных счётчиков Paper. Число сущностей так читать нельзя, поэтому его снимает
- * {@link #entitySampler()} — крошечный синхронный таск, кладущий результат в volatile-поле.
+ * потокобезопасных счётчиков Paper. Сущности и чанки так читать нельзя, поэтому их снимает
+ * {@link #entitySampler()} — синхронный таск, кладущий результат в volatile-поля.
  */
 public final class MetricsTask implements Runnable {
 
@@ -48,23 +50,43 @@ public final class MetricsTask implements Runnable {
         plugin.buffer().addMetric(sb.append('}').toString());
     }
 
-    /** Основной поток: сумма {@code World#getEntityCount()} по мирам, без копирования списков сущностей. */
+    /** Основной поток: один мир за запуск, см. {@link WorldCounter}. */
     public Runnable entitySampler() {
+        WorldCounter counter = new WorldCounter();
         return () -> {
             if (!plugin.cfg().collectMetrics()) {
                 return;
             }
-            int total = 0;
-            int loadedChunks = 0;
-            int tileEntities = 0;
+            List<WorldProbe> worlds = new ArrayList<>();
             for (World world : Bukkit.getWorlds()) {
-                total += world.getEntityCount();
-                loadedChunks += world.getChunkCount();
-                tileEntities += world.getTileEntityCount();
+                worlds.add(new WorldProbe(world));
             }
-            entities = total;
-            chunks = loadedChunks;
-            tiles = tileEntities;
+            counter.update(worlds);
+            entities = counter.entities();
+            chunks = counter.chunks();
+            tiles = counter.tiles();
         };
+    }
+
+    private record WorldProbe(World world) implements WorldCounter.Probe {
+        @Override
+        public String name() {
+            return world.getName();
+        }
+
+        @Override
+        public int entities() {
+            return world.getEntityCount();
+        }
+
+        @Override
+        public int chunks() {
+            return world.getChunkCount();
+        }
+
+        @Override
+        public int tiles() {
+            return world.getTileEntityCount();
+        }
     }
 }

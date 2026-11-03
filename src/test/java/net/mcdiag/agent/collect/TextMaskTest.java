@@ -79,4 +79,45 @@ class TextMaskTest {
         assertFalse(capped.stream().anyMatch(l -> l.message().contains("hunter2")));
         assertTrue(capped.stream().allMatch(l -> l.level().equals("INFO")));
     }
+
+    @Test
+    void logLinesAreStoredWithoutWorkAndMaskedWhenRead() {
+        TextMask mask = new TextMask(List.of());
+        java.util.concurrent.atomic.AtomicBoolean active = new java.util.concurrent.atomic.AtomicBoolean(false);
+        LogRing ring = new LogRing(mask, active::get);
+        long now = System.currentTimeMillis();
+        java.util.logging.LogRecord skipped = new java.util.logging.LogRecord(java.util.logging.Level.INFO, "before");
+        skipped.setMillis(now);
+        ring.publish(skipped);
+        assertEquals(0, ring.recent(now - 1000, 20).size());
+
+        active.set(true);
+        java.util.logging.LogRecord line = new java.util.logging.LogRecord(java.util.logging.Level.INFO, "from 10.1.2.3 {0}");
+        line.setMillis(now);
+        line.setParameters(new Object[] {"param"});
+        ring.publish(line);
+        assertEquals("from *** param", ring.recent(now - 1000, 20).get(0).message());
+
+        ring.setMask(new TextMask(List.of("custom")));
+        java.util.logging.LogRecord huge = new java.util.logging.LogRecord(java.util.logging.Level.WARNING, "x".repeat(100_000));
+        huge.setMillis(now);
+        ring.publish(huge);
+        assertEquals(180, ring.recent(now - 1000, 1).get(0).message().length());
+    }
+
+    @Test
+    void textWithoutDotsOrTokensIsReturnedAsIs() {
+        TextMask mask = new TextMask(List.of());
+        String plain = "just some chat";
+        org.junit.jupiter.api.Assertions.assertSame(plain, mask.text(plain));
+        assertEquals("ip ***", mask.text("ip 192.168.0.1"));
+    }
+
+    @Test
+    void cleansNicknamesWithoutRegex() {
+        assertEquals("Steve_1", ChatListenerAccess.safeNick("Steve_1"));
+        assertEquals("Stve", ChatListenerAccess.safeNick("St\u00e9ve"));
+        assertEquals("unknown", ChatListenerAccess.safeNick("\u00e9\u00e9"));
+        assertEquals("unknown", ChatListenerAccess.safeNick(""));
+    }
 }

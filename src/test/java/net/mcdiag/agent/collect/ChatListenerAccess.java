@@ -9,4 +9,8 @@ public final class ChatListenerAccess {
     public static String line(long ts, String kind, String nick, String world, String text, String owner) {
         return ChatListener.line(ts, kind, nick, world, text, owner);
     }
+
+    public static String safeNick(String nick) {
+        return ChatListener.safeNick(nick);
+    }
 }

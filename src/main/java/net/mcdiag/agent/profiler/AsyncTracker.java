@@ -3,21 +3,25 @@ package net.mcdiag.agent.profiler;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
+import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Locale;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Нагрузка плагинов вне главного потока. Раз в секунду смотрит CPU-время потоков планировщика
- * Paper и пулов, и только у тех, что успели поработать, снимает стек — чтобы понять, чей код.
+ * Нагрузка плагинов вне главного потока. Смотрит CPU-время потоков планировщика Paper и пулов.
+ * Чей это код, обычно видно по имени потока, а имя читается без остановки JVM. Стеки снимаются
+ * только у безымянных потоков и одним запросом: это одна остановка JVM вместо одной на поток.
  */
 final class AsyncTracker {
 
     /** Paper подписывает асинхронные задачи: «Craft Scheduler Thread - 12 - LuckPerms» */
     private static final Pattern SCHEDULER = Pattern.compile("^Craft Scheduler Thread - \\d+(?: - (.+))?$");
-    private static final long REFRESH_THREADS_MS = 10_000;
+    private static final String SCHEDULER_PREFIX = "Craft Scheduler Thread - ";
+    private static final long REFRESH_THREADS_MS = 30_000;
     private static final double MIN_DELTA_MS = 0.2;
     private static final int STACK_DEPTH = 64;
 
@@ -52,6 +56,9 @@ final class AsyncTracker {
             refreshThreads(pluginNames);
             threadsRefreshedAt = now;
         }
+        long[] active = new long[ids.length];
+        double[] deltas = new double[ids.length];
+        int count = 0;
         for (long id : ids) {
             long cpu = mx.getThreadCpuTime(id);
             if (cpu < 0) {
@@ -62,19 +69,40 @@ final class AsyncTracker {
                 continue;
             }
             double deltaMs = (cpu - prev) / 1_000_000.0;
-            if (deltaMs < MIN_DELTA_MS) {
-                continue;
+            if (deltaMs >= MIN_DELTA_MS) {
+                active[count] = id;
+                deltas[count++] = deltaMs;
             }
-            ThreadInfo info = mx.getThreadInfo(id, STACK_DEPTH);
+        }
+        if (count == 0) {
+            return;
+        }
+        // Глубина 0: имена читаются без safepoint.
+        ThreadInfo[] named = mx.getThreadInfo(Arrays.copyOf(active, count), 0);
+        long[] unknown = new long[count];
+        double[] unknownDeltas = new double[count];
+        int unresolved = 0;
+        for (int i = 0; i < count; i++) {
+            ThreadInfo info = named[i];
             if (info == null) {
                 continue;
             }
-            String plugin = attributor.pluginIn(info.getStackTrace());
-            if (plugin == null) {
-                plugin = pluginFromName(info.getThreadName(), pluginNames);
-            }
+            String plugin = pluginFromName(info.getThreadName(), pluginNames);
             if (plugin != null) {
-                window.addAsync(plugin, deltaMs);
+                window.addAsync(plugin, deltas[i]);
+            } else {
+                unknown[unresolved] = active[i];
+                unknownDeltas[unresolved++] = deltas[i];
+            }
+        }
+        if (unresolved == 0) {
+            return;
+        }
+        ThreadInfo[] stacks = mx.getThreadInfo(Arrays.copyOf(unknown, unresolved), STACK_DEPTH);
+        for (int i = 0; i < unresolved; i++) {
+            String plugin = stacks[i] == null ? null : attributor.pluginIn(stacks[i].getStackTrace());
+            if (plugin != null) {
+                window.addAsync(plugin, unknownDeltas[i]);
             }
         }
     }
@@ -94,20 +122,25 @@ final class AsyncTracker {
                 next[n++] = info.getThreadId();
             }
         }
-        ids = java.util.Arrays.copyOf(next, n);
-        lastCpu.keySet().retainAll(java.util.Arrays.stream(ids).boxed().toList());
+        ids = Arrays.copyOf(next, n);
+        Set<Long> alive = new HashSet<>(n * 2);
+        for (long id : ids) {
+            alive.add(id);
+        }
+        lastCpu.keySet().retainAll(alive);
     }
 
     /** Плагин по имени потока: подпись планировщика Paper или имя, начинающееся с имени плагина. */
     static String pluginFromName(String threadName, String[] pluginNames) {
-        Matcher m = SCHEDULER.matcher(threadName);
-        if (m.matches()) {
-            String owner = m.group(1);
-            return owner != null && ProfileWindow.validName(owner) ? owner : null;
+        if (threadName.startsWith(SCHEDULER_PREFIX)) {
+            Matcher m = SCHEDULER.matcher(threadName);
+            if (m.matches()) {
+                String owner = m.group(1);
+                return owner != null && ProfileWindow.validName(owner) ? owner : null;
+            }
         }
-        String lower = threadName.toLowerCase(Locale.ROOT);
         for (String plugin : pluginNames) {
-            if (plugin.length() >= 4 && lower.startsWith(plugin.toLowerCase(Locale.ROOT))) {
+            if (plugin.length() >= 4 && threadName.regionMatches(true, 0, plugin, 0, plugin.length())) {
                 return plugin;
             }
         }

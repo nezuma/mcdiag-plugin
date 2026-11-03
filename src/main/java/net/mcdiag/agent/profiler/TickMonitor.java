@@ -25,6 +25,8 @@ public final class TickMonitor implements Listener {
     private double sumMs;
     private double maxMs;
     private final ArrayDeque<Spike> spikes = new ArrayDeque<>();
+    /** Профилировщик смотрит сюда на каждом сэмпле: монитор нужен, только когда спайк есть */
+    private volatile boolean hasSpikes;
 
     public TickMonitor(double spikeThresholdMs) {
         this.spikeThresholdMs = spikeThresholdMs;
@@ -32,14 +34,21 @@ public final class TickMonitor implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onTickStart(ServerTickStartEvent e) {
-        tickSeq = e.getTickNumber();
-        inTick = true;
+        tickStarted(e.getTickNumber());
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onTickEnd(ServerTickEndEvent e) {
+        tickEnded(e.getTickNumber(), e.getTickDuration());
+    }
+
+    void tickStarted(long tick) {
+        tickSeq = tick;
+        inTick = true;
+    }
+
+    void tickEnded(long tick, double ms) {
         inTick = false;
-        double ms = e.getTickDuration();
         synchronized (this) {
             ticks++;
             sumMs += ms;
@@ -47,7 +56,8 @@ public final class TickMonitor implements Listener {
                 maxMs = ms;
             }
             if (ms >= spikeThresholdMs && spikes.size() < MAX_PENDING_SPIKES) {
-                spikes.addLast(new Spike(e.getTickNumber(), System.currentTimeMillis() - (long) ms, ms));
+                spikes.addLast(new Spike(tick, System.currentTimeMillis() - (long) ms, ms));
+                hasSpikes = true;
             }
         }
     }
@@ -65,8 +75,15 @@ public final class TickMonitor implements Listener {
     }
 
     /** Забирает накопленные спайки (поток профилировщика). */
-    public synchronized Spike pollSpike() {
-        return spikes.pollFirst();
+    public Spike pollSpike() {
+        if (!hasSpikes) {
+            return null;
+        }
+        synchronized (this) {
+            Spike spike = spikes.pollFirst();
+            hasSpikes = !spikes.isEmpty();
+            return spike;
+        }
     }
 
     /** Итог по тикам с прошлого вызова и обнуление счётчиков. */

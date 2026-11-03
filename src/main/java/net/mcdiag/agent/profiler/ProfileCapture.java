@@ -1,12 +1,10 @@
 package net.mcdiag.agent.profiler;
 
-import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
-import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.SplittableRandom;
 import net.mcdiag.agent.json.Json;
 
 /**
@@ -25,22 +23,31 @@ public final class ProfileCapture {
     /** @return поле {@code data} ответа на команду {@code profile} */
     public static String run(Thread mainThread, PluginLookup lookup, TickMonitor ticks, int seconds)
             throws InterruptedException {
-        ThreadMXBean mx = ManagementFactory.getThreadMXBean();
+        StackReader reader = new StackReader(mainThread);
+        // Разовый профиль подробнее обычного, но и его снимки стека ограничены бюджетом.
+        SamplePacer pacer = new SamplePacer(INTERVAL_MS, INTERVAL_MS, new SplittableRandom());
         StackAttributor attributor = new StackAttributor(lookup);
         Map<String, Integer> owners = new HashMap<>();
         Map<String, Integer> hot = new HashMap<>();
         int busy = 0;
         int idle = 0;
+        long delay = INTERVAL_MS;
         long end = System.currentTimeMillis() + seconds * 1000L;
         while (System.currentTimeMillis() < end) {
-            Thread.sleep(INTERVAL_MS);
-            ThreadInfo info = mx.getThreadInfo(mainThread.getId(), 128);
-            if (info == null) {
+            Thread.sleep(delay);
+            boolean inTick = ticks != null && ticks.inTick();
+            if (!inTick && MainThreadSampler.parked(mainThread.getState())) {
+                idle++;
+                delay = pacer.next(false, 0);
                 continue;
             }
-            StackTraceElement[] stack = info.getStackTrace();
-            boolean inTick = ticks != null && ticks.inTick();
-            if (!inTick && FrameClassifier.isWaiting(info.getThreadState(), stack.length > 0 ? stack[0] : null)) {
+            long started = System.nanoTime();
+            StackTraceElement[] stack = reader.read();
+            delay = pacer.next(true, System.nanoTime() - started);
+            if (stack.length == 0) {
+                continue;
+            }
+            if (!inTick && FrameClassifier.isWaiting(mainThread.getState(), stack[0])) {
                 idle++;
                 continue;
             }

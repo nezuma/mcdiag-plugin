@@ -13,12 +13,14 @@ import java.util.function.Function;
  */
 public final class StackAttributor {
 
-    /** Значение кеша «класс ядра или JDK, не плагин» */
-    private static final String NOT_PLUGIN = "";
     private static final int MAX_CACHE = 50_000;
 
     private final Function<String, String> pluginOf;
-    private final Map<String, String> owners = new HashMap<>(4096);
+    private final Map<String, Owner> owners = new HashMap<>(4096);
+
+    /** Всё, что нужно знать о классе; считается один раз, дальше — только поиск в HashMap. */
+    private record Owner(String plugin, String category, boolean neutral) {
+    }
 
     /** @param pluginOf имя класса → имя плагина или null; вызывается только для незнакомых классов */
     public StackAttributor(Function<String, String> pluginOf) {
@@ -29,13 +31,12 @@ public final class StackAttributor {
     public String attribute(StackTraceElement[] stack) {
         String category = null;
         for (StackTraceElement frame : stack) {
-            String cls = frame.getClassName();
-            String plugin = pluginFor(cls);
-            if (plugin != null) {
-                return plugin;
+            Owner owner = ownerOf(frame.getClassName());
+            if (owner.plugin != null) {
+                return owner.plugin;
             }
-            if (category == null && !FrameClassifier.isNeutral(cls)) {
-                category = FrameClassifier.category(cls);
+            if (category == null && !owner.neutral) {
+                category = owner.category;
             }
         }
         return category != null ? category : FrameClassifier.OTHER;
@@ -44,7 +45,7 @@ public final class StackAttributor {
     /** Только плагин (для асинхронных потоков): null, если в стеке нет кода плагинов. */
     public String pluginIn(StackTraceElement[] stack) {
         for (StackTraceElement frame : stack) {
-            String plugin = pluginFor(frame.getClassName());
+            String plugin = ownerOf(frame.getClassName()).plugin;
             if (plugin != null) {
                 return plugin;
             }
@@ -61,16 +62,17 @@ public final class StackAttributor {
         return owners.size();
     }
 
-    private String pluginFor(String cls) {
-        String cached = owners.get(cls);
+    private Owner ownerOf(String cls) {
+        Owner cached = owners.get(cls);
         if (cached == null) {
             if (owners.size() >= MAX_CACHE) {
                 owners.clear();
             }
-            String resolved = FrameClassifier.isNeutral(cls) || FrameClassifier.isCore(cls) ? null : pluginOf.apply(cls);
-            cached = resolved == null ? NOT_PLUGIN : resolved;
+            boolean neutral = FrameClassifier.isNeutral(cls);
+            String plugin = neutral || FrameClassifier.isCore(cls) ? null : pluginOf.apply(cls);
+            cached = new Owner(plugin, neutral ? null : FrameClassifier.category(cls), neutral);
             owners.put(cls, cached);
         }
-        return cached.isEmpty() ? null : cached;
+        return cached;
     }
 }

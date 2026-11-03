@@ -93,8 +93,21 @@ public final class ChatListener implements Listener {
         if (nick == null) {
             return null;
         }
-        String clean = nick.replaceAll("[^A-Za-z0-9_.*-]", "");
-        return clean.isEmpty() ? "unknown" : clean;
+        StringBuilder clean = null;
+        for (int i = 0; i < nick.length(); i++) {
+            char c = nick.charAt(i);
+            boolean ok = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+                    || c == '_' || c == '.' || c == '*' || c == '-';
+            if (!ok && clean == null) {
+                clean = new StringBuilder(nick.length()).append(nick, 0, i);
+            } else if (ok && clean != null) {
+                clean.append(c);
+            }
+        }
+        if (clean == null) {
+            return nick.isEmpty() ? "unknown" : nick;
+        }
+        return clean.length() == 0 ? "unknown" : clean.toString();
     }
 
     /** Какой плагин обрабатывает команду: по нему панель связывает команду со спайком. */
