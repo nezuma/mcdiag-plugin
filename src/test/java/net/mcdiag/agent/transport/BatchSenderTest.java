@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 
 class BatchSenderTest {
 
-    private static final String PLUGIN = "{\"version\":\"0.3.0\",\"core\":\"paper\",\"mcVersion\":\"1.19.4\",\"batchIntervalSec\":10}";
+    private static final String PLUGIN = "{\"version\":\"0.4.0\",\"core\":\"paper\",\"mcVersion\":\"1.19.4\",\"batchIntervalSec\":10}";
 
     @Test
     void assemblesIngestBatchAndWritesSample() throws IOException {
@@ -49,8 +49,16 @@ class BatchSenderTest {
                 + ",\"ok\":true,\"data\":{\"agent\":\"0.3.0\",\"sentBatches\":5}}");
         buffer.addMetric("{\"ts\":" + (now / 5000 * 5000 - 5000) + ",\"tps\":20,\"mspt\":11.2,\"online\":3,\"entities\":2840,\"chunks\":900,\"tiles\":120}");
 
+        buffer.addChat(net.mcdiag.agent.collect.ChatListenerAccess.line(now - 4000, "cmd", "Steve", "world", "//set stone", "WorldEdit"));
+        buffer.addChat(net.mcdiag.agent.collect.ChatListenerAccess.line(now - 3500, "chat", "Steve", "world", "\u043f\u0440\u0438\u0432\u0435\u0442", null));
+        buffer.addChat(net.mcdiag.agent.collect.ChatListenerAccess.line(now - 3000, "console", null, null, "say hi", null));
+        buffer.addSpike(new net.mcdiag.agent.profiler.SpikeRecord(now - 2500, 380.5,
+                net.mcdiag.agent.profiler.SpikeRecord.shares(java.util.List.of("WorldEdit", "~chunks"), 3),
+                net.mcdiag.agent.profiler.SpikeRecord.shares(java.util.List.of("EditSession.flush"), 5),
+                java.util.List.of(new net.mcdiag.agent.collect.LogRing.Line(now - 4000, "WARNING", "WorldEdit", "slow"))).richJson());
+
         StringBuilder sb = new StringBuilder();
-        assertEquals(10, BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), now, PLUGIN));
+        assertEquals(14, BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), now, PLUGIN));
         assertTrue(buffer.isEmpty());
         String body = sb.toString();
         assertTrue(body.chars().allMatch(c -> c >= 0x20 && c < 0x7f), "body must be printable ASCII");

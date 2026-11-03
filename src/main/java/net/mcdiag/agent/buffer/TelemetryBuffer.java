@@ -18,6 +18,10 @@ public final class TelemetryBuffer {
     /** Системные срезы (раз в минуту) и ответы на команды поддержки */
     public static final int MAX_SYSTEM = 10;
     public static final int MAX_RESULTS = 10;
+    /** Журнал чата: при обрыве связи старые строки вытесняются; панель принимает ≤ 200 за батч */
+    public static final int MAX_CHAT = 1000;
+    public static final int MAX_CHAT_PER_BATCH = 200;
+    public static final int MAX_SPIKES = 20;
     /** Защита от элемента, который никогда не влезет в батч: такой выбрасывается при чтении. */
     private static final int MAX_ELEMENT_CHARS = 32 * 1024;
 
@@ -27,6 +31,8 @@ public final class TelemetryBuffer {
     private final ArrayDeque<String> profiles = new ArrayDeque<>(MAX_PROFILES);
     private final ArrayDeque<String> system = new ArrayDeque<>(MAX_SYSTEM);
     private final ArrayDeque<String> results = new ArrayDeque<>(MAX_RESULTS);
+    private final ArrayDeque<String> chat = new ArrayDeque<>();
+    private final ArrayDeque<String> spikes = new ArrayDeque<>();
     /** Список плагинов сервера: важна только последняя версия */
     private String inventory;
     private int maxEvents;
@@ -69,6 +75,28 @@ public final class TelemetryBuffer {
 
     public void addResult(String json) {
         addBounded(results, MAX_RESULTS, json);
+    }
+
+    public void addChat(String json) {
+        addBounded(chat, MAX_CHAT, json);
+    }
+
+    public void addSpike(String json) {
+        addBounded(spikes, MAX_SPIKES, json);
+    }
+
+    /** Панель выключила журнал или отклонила батч: ничего из этого больше не отправляем. */
+    public void clearOptional(boolean clearChat, boolean clearSpikes) {
+        synchronized (lock) {
+            if (clearChat) {
+                chat.forEach(line -> chars -= line.length());
+                chat.clear();
+            }
+            if (clearSpikes) {
+                spikes.forEach(line -> chars -= line.length());
+                spikes.clear();
+            }
+        }
     }
 
     private void addBounded(ArrayDeque<String> queue, int max, String json) {
@@ -125,6 +153,18 @@ public final class TelemetryBuffer {
         }
     }
 
+    public int drainChat(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(chat, sb, MAX_CHAT_PER_BATCH, maxChars);
+        }
+    }
+
+    public int drainSpikes(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(spikes, sb, MAX_SPIKES, maxChars);
+        }
+    }
+
     public int drainSystem(StringBuilder sb, int maxChars) {
         synchronized (lock) {
             return drain(system, sb, MAX_SYSTEM, maxChars);
@@ -153,7 +193,7 @@ public final class TelemetryBuffer {
     public boolean isEmpty() {
         synchronized (lock) {
             return events.isEmpty() && metrics.isEmpty() && profiles.isEmpty() && system.isEmpty()
-                    && results.isEmpty() && inventory == null;
+                    && results.isEmpty() && chat.isEmpty() && spikes.isEmpty() && inventory == null;
         }
     }
 

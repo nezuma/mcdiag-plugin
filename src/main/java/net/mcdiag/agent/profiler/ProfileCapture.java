@@ -61,14 +61,23 @@ public final class ProfileCapture {
 
     /** Верхний кадр не из JDK: «Класс.метод» без пакета — коротко и без лишних подробностей. */
     static String hotFrame(StackTraceElement[] stack) {
+        StackTraceElement f = hotElement(stack);
+        return f == null ? null : frameName(f);
+    }
+
+    /** Верхний кадр не из JDK; ссылка на кадр дешевле строки, строку соберём только для спайка. */
+    static StackTraceElement hotElement(StackTraceElement[] stack) {
         for (StackTraceElement f : stack) {
-            if (FrameClassifier.isNeutral(f.getClassName())) {
-                continue;
+            if (!FrameClassifier.isNeutral(f.getClassName())) {
+                return f;
             }
-            String cls = f.getClassName();
-            return cls.substring(cls.lastIndexOf('.') + 1) + "." + f.getMethodName();
         }
         return null;
+    }
+
+    static String frameName(StackTraceElement f) {
+        String cls = f.getClassName();
+        return cls.substring(cls.lastIndexOf('.') + 1) + "." + f.getMethodName();
     }
 
     private static void appendShares(StringBuilder sb, Map<String, Integer> counts, int total, String key) {

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import net.mcdiag.agent.collect.LogRing;
 import org.junit.jupiter.api.Test;
 
 class ProfileWindowTest {
@@ -37,6 +38,42 @@ class ProfileWindowTest {
         assertTrue(json.contains("{\"n\":\"LuckPerms\",\"ms\":0,\"a\":125.50}"), json);
         assertTrue(json.contains("\"core\":{\"entities\":40.00,\"chunks\":0,\"blocks\":0,\"network\":0,\"saving\":0,\"other\":20.00}"), json);
         assertTrue(json.contains("\"spikes\":[{\"ts\":1800000001000,\"ms\":380.50,\"top\":[{\"n\":\"WorldGuard\",\"p\":0.75},{\"n\":\"~entities\",\"p\":0.25}]}]"), json);
+    }
+
+    @Test
+    void richSpikeKeepsOldFieldsAndAddsContext() {
+        LogRing.Line line = new LogRing.Line(9, "WARNING", "WorldEdit", "медленно");
+        SpikeRecord spike = new SpikeRecord(5, 380.5,
+                SpikeRecord.shares(List.of("WorldEdit", "WorldEdit", FrameClassifier.CHUNKS), 3),
+                SpikeRecord.shares(List.of("EditSession.flush"), 5), List.of(line));
+        String json = spike.richJson();
+        assertTrue(json.startsWith("{\"ts\":5,\"ms\":380.50,\"top\":[{\"n\":\"WorldEdit\",\"p\":0.67}"), json);
+        assertTrue(json.contains("\"hot\":[{\"f\":\"EditSession.flush\",\"p\":1"), json);
+        assertTrue(json.endsWith("\"logs\":[{\"ts\":9,\"l\":\"WARNING\",\"g\":\"WorldEdit\",\"m\":\"\\u043c\\u0435\\u0434\\u043b\\u0435\\u043d\\u043d\\u043e\"}]}"), json);
+        // Старый формат внутри минутного среза не меняется: старая панель его примет.
+        StringBuilder old = new StringBuilder();
+        spike.appendJson(old);
+        assertFalse(old.toString().contains("hot"));
+    }
+
+    @Test
+    void spikeLogsAreBoundedSoBatchesStaySmall() {
+        List<LogRing.Line> logs = new java.util.ArrayList<>();
+        for (int i = 0; i < 500; i++) {
+            logs.add(new LogRing.Line(i, "INFO", "P", "я".repeat(180)));
+        }
+        String json = new SpikeRecord(1, 200, List.of(), List.of(), logs).richJson();
+        assertTrue(json.length() < 12 * 1024, "len " + json.length());
+        assertTrue(json.endsWith("]}"));
+    }
+
+    @Test
+    void countsSpikesSentSeparately() {
+        ProfileWindow w = new ProfileWindow(0);
+        w.addBusy("P", 20);
+        String json = w.toJson(new TickMonitor.TickStats(1, 1, 1), 0, null, List.of(), 3);
+        assertTrue(json.endsWith(",\"spikeCount\":3}"), json);
+        assertFalse(w.toJson(new TickMonitor.TickStats(1, 1, 1), 0, null, List.of()).contains("spikeCount"));
     }
 
     @Test

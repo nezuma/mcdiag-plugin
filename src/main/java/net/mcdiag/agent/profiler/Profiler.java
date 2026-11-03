@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
 import net.mcdiag.agent.McDiagPlugin;
+import net.mcdiag.agent.collect.LogRing;
 import net.mcdiag.agent.json.Json;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
@@ -46,6 +47,12 @@ public final class Profiler implements Runnable {
 
     private final long[] ringTick = new long[RING];
     private final String[] ringOwner = new String[RING];
+    private final StackTraceElement[] ringFrame = new StackTraceElement[RING];
+    /** Лог прикладываем только к первым спайкам минуты: при шторме спайков он был бы одинаковым */
+    private static final int SPIKES_WITH_LOGS = 3;
+    private static final long SPIKE_LOG_WINDOW_MS = 60_000;
+    private static final int SPIKE_LOG_LINES = 20;
+    private int sentSpikes;
     private int ringPos;
 
     private volatile boolean running = true;
@@ -141,6 +148,7 @@ public final class Profiler implements Runnable {
         if (inTick) {
             ringTick[ringPos] = tick;
             ringOwner[ringPos] = owner;
+            ringFrame[ringPos] = ProfileCapture.hotElement(stack);
             ringPos = (ringPos + 1) % RING;
         }
     }
@@ -150,15 +158,29 @@ public final class Profiler implements Runnable {
         TickMonitor.Spike spike;
         while ((spike = ticks.pollSpike()) != null) {
             List<String> owners = new ArrayList<>();
+            List<String> frames = new ArrayList<>();
             for (int i = 0; i < RING; i++) {
                 if (ringTick[i] == spike.tick() && ringOwner[i] != null) {
                     owners.add(ringOwner[i]);
+                    if (ringFrame[i] != null) {
+                        frames.add(ProfileCapture.frameName(ringFrame[i]));
+                    }
                 }
             }
             SpikeRecord record = owners.isEmpty()
                     ? new SpikeRecord(spike.startedAt(), spike.ms(), List.of())
                     : SpikeRecord.of(spike.startedAt(), spike.ms(), owners);
-            if (windowSpikes.size() < 20) {
+            if (plugin.panel().richSpikes()) {
+                // Новая панель: спайк уходит сразу с ближайшим батчем, а не с минутным срезом.
+                boolean withLogs = sentSpikes < SPIKES_WITH_LOGS && plugin.cfg().spikeLogs();
+                List<LogRing.Line> logs = withLogs
+                        ? plugin.logRing().recent(spike.startedAt() - SPIKE_LOG_WINDOW_MS, SPIKE_LOG_LINES)
+                        : List.of();
+                SpikeRecord rich = new SpikeRecord(record.ts(), record.ms(), record.top(),
+                        frames.isEmpty() ? List.of() : SpikeRecord.shares(frames, SpikeRecord.MAX_HOT), logs);
+                plugin.buffer().addSpike(rich.richJson());
+                sentSpikes++;
+            } else if (windowSpikes.size() < 20) {
                 windowSpikes.add(record);
             }
             synchronized (recentSpikes) {
@@ -194,8 +216,9 @@ public final class Profiler implements Runnable {
         }
         int online = Bukkit.getOnlinePlayers().size();
         // Процессор и память теперь уходят отдельным системным срезом (SystemStats).
-        String json = done.toJson(stats, online, null, windowSpikes);
+        String json = done.toJson(stats, online, null, windowSpikes, sentSpikes);
         windowSpikes.clear();
+        sentSpikes = 0;
         last = new Summary(done.startMs(), stats, done.busyMs(), done.coreMs(), done.top(10));
         if (plugin.cfg().canSend()) {
             plugin.buffer().addProfile(json);

@@ -106,6 +106,9 @@ public final class BatchSender implements Runnable {
         int status = res.status();
         if (status >= 200 && status < 300) {
             clearPending();
+            PanelState panel = plugin.panel();
+            panel.update(res.body());
+            plugin.buffer().clearOptional(!panel.chat() && !panel.commands(), !panel.richSpikes());
             plugin.remote().accept(RemoteCommandParser.parse(res.body()));
             failures = 0;
             sentBatches++;
@@ -123,6 +126,9 @@ public final class BatchSender implements Runnable {
         } else if (status >= 400 && status < 500) {
             plugin.buffer().countDropped(pendingItems);
             clearPending();
+            // Панель не приняла формат — откатываемся к старому, чтобы не терять и остальные данные.
+            plugin.panel().reset();
+            plugin.buffer().clearOptional(true, true);
             report(status, "batch dropped " + status + code(res), true);
         } else {
             backoff(cfg, now);
@@ -167,6 +173,9 @@ public final class BatchSender implements Runnable {
                 .append(",\"plugin\":").append(pluginJson);
         int[] budget = {MAX_BODY_CHARS - sb.length() - 64};
         int items = optional(sb, "results", budget, buffer::drainResults);
+        // Спайки и команды — первыми: по ним панель сразу предупреждает об опасных действиях.
+        items += optional(sb, "spikes", budget, buffer::drainSpikes);
+        items += optional(sb, "chatlog", budget, buffer::drainChat);
         items += section(sb, "events", budget, (out, max) -> buffer.drainEvents(out, maxEvents, max));
         items += section(sb, "metrics", budget, buffer::drainMetrics);
         items += optional(sb, "profile", budget, buffer::drainProfiles);

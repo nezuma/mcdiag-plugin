@@ -84,6 +84,11 @@ public final class ProfileWindow {
 
     /** Срез в формате IngestProfile. */
     public String toJson(TickMonitor.TickStats ticks, int online, String jvmJson, List<SpikeRecord> spikes) {
+        return toJson(ticks, online, jvmJson, spikes, 0);
+    }
+
+    /** @param sentSpikes спайки минуты, уже отправленные отдельно (панель с возможностью «spikes») */
+    public String toJson(TickMonitor.TickStats ticks, int online, String jvmJson, List<SpikeRecord> spikes, int sentSpikes) {
         StringBuilder sb = new StringBuilder(1024);
         sb.append("{\"ts\":").append(startMs).append(",\"wall\":");
         Json.decimal2(sb, wallMs).append(",\"busy\":");
@@ -124,6 +129,9 @@ public final class ProfileWindow {
                 spikes.get(i).appendJson(sb);
             }
             sb.append(']');
+        }
+        if (sentSpikes > 0) {
+            sb.append(",\"spikeCount\":").append(sentSpikes);
         }
         return sb.append('}').toString();
     }

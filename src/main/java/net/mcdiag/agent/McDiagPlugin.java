@@ -3,10 +3,13 @@ package net.mcdiag.agent;
 import java.util.Locale;
 import java.util.logging.Logger;
 import net.mcdiag.agent.buffer.TelemetryBuffer;
+import net.mcdiag.agent.collect.ChatListener;
 import net.mcdiag.agent.collect.ErrorCaptureHandler;
+import net.mcdiag.agent.collect.LogRing;
 import net.mcdiag.agent.collect.MetricsTask;
 import net.mcdiag.agent.collect.PlayerListener;
 import net.mcdiag.agent.collect.SystemStats;
+import net.mcdiag.agent.collect.TextMask;
 import net.mcdiag.agent.command.DiagCommand;
 import net.mcdiag.agent.config.AgentConfig;
 import net.mcdiag.agent.json.Json;
@@ -15,6 +18,7 @@ import net.mcdiag.agent.profiler.TickMonitor;
 import net.mcdiag.agent.remote.RemoteCommands;
 import net.mcdiag.agent.transport.BatchSender;
 import net.mcdiag.agent.transport.HttpTransport;
+import net.mcdiag.agent.transport.PanelState;
 import net.mcdiag.agent.util.UuidHasher;
 import org.bukkit.Bukkit;
 import org.bukkit.command.PluginCommand;
@@ -37,6 +41,9 @@ public final class McDiagPlugin extends JavaPlugin {
     private RemoteCommands remote;
     private SystemStats system;
     private String pluginStatic;
+    private final PanelState panel = new PanelState();
+    private volatile TextMask mask;
+    private LogRing logRing;
 
     @Override
     public void onEnable() {
@@ -57,6 +64,9 @@ public final class McDiagPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(tickMonitor, this);
         errorHandler = new ErrorCaptureHandler(this);
         Logger.getLogger("").addHandler(errorHandler);
+        logRing = new LogRing(mask);
+        Logger.getLogger("").addHandler(logRing);
+        getServer().getPluginManager().registerEvents(new ChatListener(this), this);
 
         PluginCommand command = getCommand("diag");
         if (command != null) {
@@ -80,6 +90,10 @@ public final class McDiagPlugin extends JavaPlugin {
         if (errorHandler != null) {
             Logger.getLogger("").removeHandler(errorHandler);
             errorHandler = null;
+        }
+        if (logRing != null) {
+            Logger.getLogger("").removeHandler(logRing);
+            logRing = null;
         }
     }
 
@@ -112,6 +126,27 @@ public final class McDiagPlugin extends JavaPlugin {
         return sender;
     }
 
+    public PanelState panel() {
+        return panel;
+    }
+
+    public TextMask mask() {
+        return mask;
+    }
+
+    public LogRing logRing() {
+        return logRing;
+    }
+
+    /** Чат пишем, только если разрешено и в config.yml, и владельцем на сайте. */
+    public boolean chatEnabled() {
+        return cfg.chatLogAllowed() && panel.chat();
+    }
+
+    public boolean commandsEnabled() {
+        return cfg.chatLogAllowed() && panel.commands();
+    }
+
     public RemoteCommands remote() {
         return remote;
     }
@@ -139,6 +174,7 @@ public final class McDiagPlugin extends JavaPlugin {
             hasher = new UuidHasher(next.uuidSalt());
         }
         cfg = next;
+        mask = new TextMask(next.hiddenCommands());
     }
 
     private void scheduleTasks() {

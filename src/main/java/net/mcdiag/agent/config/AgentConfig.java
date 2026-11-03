@@ -1,6 +1,7 @@
 package net.mcdiag.agent.config;
 
 import java.net.URI;
+import java.util.List;
 import java.util.regex.Pattern;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -30,6 +31,9 @@ public record AgentConfig(
         int profilerIntervalMs,
         int spikeThresholdMs,
         boolean profilerAsync,
+        boolean spikeLogs,
+        boolean chatLogAllowed,
+        List<String> hiddenCommands,
         String problem) {
 
     /** Формат токена из openapi: {@code mcd_<serverId>_<uuid>}. */
@@ -76,6 +80,10 @@ public record AgentConfig(
                 clamp(profiler == null ? 20 : profiler.getInt("interval_ms", 20), 10, 200),
                 clamp(profiler == null ? 100 : profiler.getInt("spike_threshold_ms", 100), 50, 10_000),
                 flag(profiler, "async"),
+                c.getBoolean("profiler.spike_logs", true),
+                // Журнал включает владелец на сайте; здесь можно запретить его совсем.
+                c.getBoolean("chat_log.allowed", true),
+                List.copyOf(c.getStringList("chat_log.hidden_commands")),
                 problem);
     }
 
