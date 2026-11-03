@@ -1,6 +1,6 @@
 # MCDiag Agent
 # Адрес приёма телеметрии. Только HTTPS — http:// отклоняется, отправка не запускается.
-backend_url: "https://api.mcdiag.example/api/v1/ingest"
+backend_url: "https://mcdiag.rimworlda.ru/api/v1/ingest"
 
 # Токен сервера из панели MCDiag (показывается один раз).
 # Безопаснее задать из консоли: diag token <value> — из чата команда запрещена.

@@ -41,5 +41,6 @@ tasks.processResources {
 }
 
 tasks.jar {
-    archiveFileName.set("MCDiag-Agent-${project.version}.jar")
+    // Имя без версии: панель ссылается на releases/latest/download/MCDiag-Agent.jar.
+    archiveFileName.set("MCDiag-Agent.jar")
 }
