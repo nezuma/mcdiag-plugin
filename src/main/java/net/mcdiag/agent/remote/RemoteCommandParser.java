@@ -16,7 +16,7 @@ public final class RemoteCommandParser {
     static final int MAX_COMMANDS = 5;
     private static final Pattern COMMAND = Pattern.compile(
             "\\{\"id\":\"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\","
-                    + "\"type\":\"([a-z_]{1,32})\"(?:,\"seconds\":(\\d{1,3}))?\\}");
+                    + "\"type\":\"([a-z_]{1,32})\"(?:,\"seconds\":(\\d{1,4}))?\\}");
 
     private RemoteCommandParser() {
     }

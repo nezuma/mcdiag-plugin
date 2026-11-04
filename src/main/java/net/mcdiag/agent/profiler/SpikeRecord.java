@@ -39,6 +39,11 @@ public record SpikeRecord(long ts, double ms, List<Share> top, List<Share> hot, 
 
     /** Новый формат: отдельным элементом поля {@code spikes}, с горячими методами и логом. */
     public String richJson() {
+        return richJson(null);
+    }
+
+    /** @param insight объект подробного разбора для поля {@code x} или null */
+    public String richJson(String insight) {
         StringBuilder sb = new StringBuilder(512);
         appendJson(sb);
         sb.setLength(sb.length() - 1);
@@ -63,7 +68,11 @@ public record SpikeRecord(long ts, double ms, List<Share> top, List<Share> hot, 
             }
             Json.str(sb.append(",\"m\":"), line.message(), 180).append('}');
         }
-        return sb.append("]}").toString();
+        sb.append(']');
+        if (insight != null) {
+            sb.append(",\"x\":").append(insight);
+        }
+        return sb.append('}').toString();
     }
 
     public void appendJson(StringBuilder sb) {

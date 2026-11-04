@@ -49,9 +49,9 @@ class BatchSenderTest {
                 + ",\"ok\":true,\"data\":{\"agent\":\"0.3.0\",\"sentBatches\":5}}");
         buffer.addMetric("{\"ts\":" + (now / 5000 * 5000 - 5000) + ",\"tps\":20,\"mspt\":11.2,\"online\":3,\"entities\":2840,\"chunks\":900,\"tiles\":120}");
 
-        buffer.addChat(net.mcdiag.agent.collect.ChatListenerAccess.line(now - 4000, "cmd", "Steve", "world", "//set stone", "WorldEdit"));
-        buffer.addChat(net.mcdiag.agent.collect.ChatListenerAccess.line(now - 3500, "chat", "Steve", "world", "\u043f\u0440\u0438\u0432\u0435\u0442", null));
-        buffer.addChat(net.mcdiag.agent.collect.ChatListenerAccess.line(now - 3000, "console", null, null, "say hi", null));
+        buffer.addChat(net.mcdiag.agent.collect.CommandListenerAccess.line(now - 4000, "cmd", "Steve", "world", "//set stone", "WorldEdit"));
+        buffer.addChat(net.mcdiag.agent.collect.CommandListenerAccess.line(now - 3500, "chat", "Steve", "world", "\u043f\u0440\u0438\u0432\u0435\u0442", null));
+        buffer.addChat(net.mcdiag.agent.collect.CommandListenerAccess.line(now - 3000, "console", null, null, "say hi", null));
         buffer.addSpike(new net.mcdiag.agent.profiler.SpikeRecord(now - 2500, 380.5,
                 net.mcdiag.agent.profiler.SpikeRecord.shares(java.util.List.of("WorldEdit", "~chunks"), 3),
                 net.mcdiag.agent.profiler.SpikeRecord.shares(java.util.List.of("EditSession.flush"), 5),

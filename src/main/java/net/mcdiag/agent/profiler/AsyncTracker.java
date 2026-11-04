@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
  * Чей это код, обычно видно по имени потока, а имя читается без остановки JVM. Стеки снимаются
  * только у безымянных потоков и одним запросом: это одна остановка JVM вместо одной на поток.
  */
-final class AsyncTracker {
+public final class AsyncTracker {
 
     /** Paper подписывает асинхронные задачи: «Craft Scheduler Thread - 12 - LuckPerms» */
     private static final Pattern SCHEDULER = Pattern.compile("^Craft Scheduler Thread - \\d+(?: - (.+))?$");
@@ -131,7 +131,7 @@ final class AsyncTracker {
     }
 
     /** Плагин по имени потока: подпись планировщика Paper или имя, начинающееся с имени плагина. */
-    static String pluginFromName(String threadName, String[] pluginNames) {
+    public static String pluginFromName(String threadName, String[] pluginNames) {
         if (threadName.startsWith(SCHEDULER_PREFIX)) {
             Matcher m = SCHEDULER.matcher(threadName);
             if (m.matches()) {

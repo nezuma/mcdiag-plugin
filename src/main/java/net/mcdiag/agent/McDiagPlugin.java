@@ -3,7 +3,7 @@ package net.mcdiag.agent;
 import java.util.Locale;
 import java.util.logging.Logger;
 import net.mcdiag.agent.buffer.TelemetryBuffer;
-import net.mcdiag.agent.collect.ChatListener;
+import net.mcdiag.agent.collect.CommandListener;
 import net.mcdiag.agent.collect.ErrorCaptureHandler;
 import net.mcdiag.agent.collect.LogRing;
 import net.mcdiag.agent.collect.MetricsTask;
@@ -12,13 +12,19 @@ import net.mcdiag.agent.collect.SystemStats;
 import net.mcdiag.agent.collect.TextMask;
 import net.mcdiag.agent.command.DiagCommand;
 import net.mcdiag.agent.config.AgentConfig;
+import net.mcdiag.agent.insight.GcWatch;
+import net.mcdiag.agent.insight.JfrInsight;
+import net.mcdiag.agent.insight.MemoryStats;
 import net.mcdiag.agent.json.Json;
+import net.mcdiag.agent.profiler.AsyncTracker;
+import net.mcdiag.agent.profiler.PluginLookup;
 import net.mcdiag.agent.profiler.Profiler;
 import net.mcdiag.agent.profiler.TickMonitor;
 import net.mcdiag.agent.remote.RemoteCommands;
 import net.mcdiag.agent.transport.BatchSender;
 import net.mcdiag.agent.transport.HttpTransport;
 import net.mcdiag.agent.transport.PanelState;
+import net.mcdiag.agent.util.Safe;
 import net.mcdiag.agent.util.UuidHasher;
 import org.bukkit.Bukkit;
 import org.bukkit.command.PluginCommand;
@@ -28,6 +34,8 @@ import org.bukkit.scheduler.BukkitScheduler;
 public final class McDiagPlugin extends JavaPlugin {
 
     private static final long TICKS_PER_SEC = 20;
+    private static final long JFR_START_DELAY_MS = 20_000;
+    private volatile Thread jfrStarter;
 
     private volatile AgentConfig cfg;
     private volatile UuidHasher hasher;
@@ -44,6 +52,9 @@ public final class McDiagPlugin extends JavaPlugin {
     private final PanelState panel = new PanelState();
     private volatile TextMask mask;
     private volatile LogRing logRing;
+    private volatile GcWatch gcWatch;
+    private volatile JfrInsight jfr;
+    private MemoryStats memory;
 
     @Override
     public void onEnable() {
@@ -54,6 +65,7 @@ public final class McDiagPlugin extends JavaPlugin {
         pluginStatic = pluginJson();
         remote = new RemoteCommands(this);
         system = new SystemStats(json -> buffer.addSystem(json));
+        memory = new MemoryStats();
         // Интервал отправки меняется по /diag reload, поэтому блок plugin собирается на каждый батч.
         sender = new BatchSender(this, new HttpTransport("MCDiag-Agent/" + getDescription().getVersion()),
                 () -> pluginStatic.substring(0, pluginStatic.length() - 1) + ",\"batchIntervalSec\":" + cfg.batchIntervalSec() + "}");
@@ -64,7 +76,7 @@ public final class McDiagPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(tickMonitor, this);
         errorHandler = new ErrorCaptureHandler(this);
         Logger.getLogger("").addHandler(errorHandler);
-        getServer().getPluginManager().registerEvents(new ChatListener(this), this);
+        getServer().getPluginManager().registerEvents(new CommandListener(this), this);
 
         PluginCommand command = getCommand("diag");
         if (command != null) {
@@ -90,6 +102,7 @@ public final class McDiagPlugin extends JavaPlugin {
             errorHandler = null;
         }
         removeLogRing();
+        stopInsight();
     }
 
     /** @return проблема конфигурации или null */
@@ -133,11 +146,7 @@ public final class McDiagPlugin extends JavaPlugin {
         return logRing;
     }
 
-    /** Чат пишем, только если разрешено и в config.yml, и владельцем на сайте. */
-    public boolean chatEnabled() {
-        return cfg.chatLogAllowed() && panel.chat();
-    }
-
+    /** Команды пишем, только если разрешено и в config.yml, и владельцем на сайте. */
     public boolean commandsEnabled() {
         return cfg.chatLogAllowed() && panel.commands();
     }
@@ -193,23 +202,144 @@ public final class McDiagPlugin extends JavaPlugin {
         }
     }
 
+    /** Каждый источник подключается отдельно: если его нет, остальное работает. */
+    private void syncInsight() {
+        stopInsight();
+        if (!cfg.profilerEnabled()) {
+            return;
+        }
+        try {
+            GcWatch watch = new GcWatch();
+            watch.start();
+            gcWatch = watch;
+        } catch (Exception | LinkageError e) {
+            getLogger().log(java.util.logging.Level.FINE, "GC notifications are unavailable", e);
+        }
+        if (!cfg.jfrInsight()) {
+            return;
+        }
+        // Запуск JFR занимает доли секунды, поэтому он идёт в своём потоке и после старта сервера.
+        Thread starter = new Thread(() -> {
+            try {
+                Thread.sleep(JFR_START_DELAY_MS);
+                PluginLookup lookup = new PluginLookup(getLogger());
+                lookup.rebuild(Bukkit.getPluginManager().getPlugins());
+                JfrInsight next = new JfrInsight(getLogger(), mainThread.getId(), new CachedOwner(lookup), AsyncTracker::pluginFromName);
+                next.start();
+                if (jfrStarter == Thread.currentThread()) {
+                    jfr = next;
+                } else {
+                    next.stop();
+                }
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } catch (Throwable e) {
+                getLogger().log(java.util.logging.Level.FINE, "JFR insight is unavailable", e);
+            }
+        }, "MCDiag Insight start");
+        starter.setDaemon(true);
+        starter.setPriority(Thread.MIN_PRIORITY);
+        jfrStarter = starter;
+        starter.start();
+    }
+
+    private void stopInsight() {
+        Thread starter = jfrStarter;
+        jfrStarter = null;
+        if (starter != null) {
+            starter.interrupt();
+        }
+        GcWatch watch = gcWatch;
+        gcWatch = null;
+        if (watch != null) {
+            Safe.run(getLogger(), "GC watch stop", watch::stop);
+        }
+        JfrInsight current = jfr;
+        jfr = null;
+        if (current != null) {
+            // Закрытие не должно задержать главный поток при выключении.
+            Thread stopper = new Thread(() -> Safe.run(getLogger(), "JFR stop", current::stop), "MCDiag Insight stop");
+            stopper.setDaemon(true);
+            stopper.start();
+            try {
+                stopper.join(1_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private void collectMemory() {
+        if (!panel.memory()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        JfrInsight currentJfr = jfr;
+        if (currentJfr != null) {
+            currentJfr.checkHealth(now);
+        }
+        Profiler p = profiler;
+        GcWatch watch = gcWatch;
+        buffer.addMemory(memory.snapshotJson(now / 60_000 * 60_000,
+                name -> p == null ? null : p.pluginOfThread(name),
+                watch == null ? null : watch.drainMinute(),
+                currentJfr != null && currentJfr.active() ? currentJfr.drainAllocations() : null));
+    }
+
+    /** Кеш «класс → плагин» для потока разбора JFR: только он сюда и обращается. */
+    private static final class CachedOwner implements java.util.function.Function<String, String> {
+        private final java.util.Map<String, String> cache = new java.util.HashMap<>();
+        private final PluginLookup lookup;
+
+        CachedOwner(PluginLookup lookup) {
+            this.lookup = lookup;
+        }
+
+        @Override
+        public String apply(String cls) {
+            String cached = cache.get(cls);
+            if (cached != null) {
+                return cached.isEmpty() ? null : cached;
+            }
+            if (cache.size() > 50_000) {
+                cache.clear();
+            }
+            String owner = net.mcdiag.agent.profiler.FrameClassifier.isNeutral(cls) || net.mcdiag.agent.profiler.FrameClassifier.isCore(cls)
+                    ? null : lookup.apply(cls);
+            cache.put(cls, owner == null ? "" : owner);
+            return owner;
+        }
+    }
+
+    public GcWatch gcWatch() {
+        return gcWatch;
+    }
+
+    public JfrInsight jfr() {
+        return jfr;
+    }
+
     private void scheduleTasks() {
         syncLogRing();
+        syncInsight();
         BukkitScheduler scheduler = Bukkit.getScheduler();
         long metricsPeriod = cfg.metricsIntervalSec() * TICKS_PER_SEC;
         long batchPeriod = cfg.batchIntervalSec() * TICKS_PER_SEC;
         // Сущности снимаем чуть раньше async-таска метрик, чтобы точка видела свежее значение.
-        scheduler.runTaskTimer(this, metrics.entitySampler(), metricsPeriod - 1, metricsPeriod);
-        scheduler.runTaskTimerAsynchronously(this, metrics, metricsPeriod, metricsPeriod);
-        scheduler.runTaskTimerAsynchronously(this, sender, batchPeriod, batchPeriod);
+        // Исключение в задаче Bukkit написал бы в консоль сервера как ошибку.
+        java.util.logging.Logger log = getLogger();
+        scheduler.runTaskTimer(this, Safe.task(log, "entity counter", metrics.entitySampler()), metricsPeriod - 1, metricsPeriod);
+        scheduler.runTaskTimerAsynchronously(this, Safe.task(log, "metrics", metrics), metricsPeriod, metricsPeriod);
+        scheduler.runTaskTimerAsynchronously(this, Safe.task(log, "sender", sender), batchPeriod, batchPeriod);
         if (cfg.collectMetrics()) {
             // Процессор, память, диск — раз в минуту, независимо от профилировщика.
-            scheduler.runTaskTimerAsynchronously(this, system, 60 * TICKS_PER_SEC, 60 * TICKS_PER_SEC);
+            scheduler.runTaskTimerAsynchronously(this, Safe.task(log, "system stats", system), 60 * TICKS_PER_SEC, 60 * TICKS_PER_SEC);
+            scheduler.runTaskTimerAsynchronously(this, Safe.task(log, "memory stats", this::collectMemory), 60 * TICKS_PER_SEC, 60 * TICKS_PER_SEC);
         }
 
         tickMonitor.setSpikeThreshold(cfg.spikeThresholdMs());
         if (cfg.profilerEnabled()) {
-            Profiler next = new Profiler(this, mainThread, tickMonitor, cfg.profilerIntervalMs(), cfg.profilerAsync());
+            Profiler next = new Profiler(this, mainThread, tickMonitor, cfg.profilerIntervalMs(), cfg.spikeIntervalMs(), cfg.profilerAsync());
             next.start();
             profiler = next;
         }

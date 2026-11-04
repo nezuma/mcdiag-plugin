@@ -10,10 +10,11 @@ import java.util.regex.Pattern;
 public final class PanelState {
 
     private static final Pattern CAPS = Pattern.compile("\"caps\":\\[([^\\]]*)\\]");
-    private static final Pattern CHATLOG = Pattern.compile("\"chatlog\":\\{\"chat\":(true|false),\"cmd\":(true|false)\\}");
+    private static final Pattern CHATLOG = Pattern.compile("\"chatlog\":\\{(?:\"chat\":(?:true|false),)?\"cmd\":(true|false)\\}");
 
     private volatile boolean richSpikes;
-    private volatile boolean chat;
+    private volatile boolean insight;
+    private volatile boolean memory;
     private volatile boolean commands;
 
     /** Успешный ответ панели. Нет {@code caps} — панель старая, работаем в прежнем формате. */
@@ -26,14 +27,16 @@ public final class PanelState {
         richSpikes = list.contains("\"spikes\"");
         Matcher log = CHATLOG.matcher(body);
         boolean found = list.contains("\"chatlog\"") && log.find();
-        chat = found && log.group(1).equals("true");
-        commands = found && log.group(2).equals("true");
+        insight = list.contains("\"insight\"");
+        memory = list.contains("\"memory\"");
+        commands = found && log.group(1).equals("true");
     }
 
     /** Панель отклонила батч (400): возвращаемся к прежнему формату до следующего ответа. */
     public void reset() {
         richSpikes = false;
-        chat = false;
+        insight = false;
+        memory = false;
         commands = false;
     }
 
@@ -41,8 +44,14 @@ public final class PanelState {
         return richSpikes;
     }
 
-    public boolean chat() {
-        return chat;
+    /** Панель понимает подробный разбор спайка (поле {@code x}). */
+    public boolean insight() {
+        return insight;
+    }
+
+    /** Панель понимает карту памяти (поле {@code memory} батча). */
+    public boolean memory() {
+        return memory;
     }
 
     public boolean commands() {

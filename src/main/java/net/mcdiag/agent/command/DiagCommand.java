@@ -85,7 +85,8 @@ public final class DiagCommand implements TabExecutor {
                     + (p.usesHandshake() ? " (no JVM stop)" : " (JVM stop, Java 19+ avoids it)")
                     + ", " + fmt(p.samplingPct(), 3) + "% of time"
                     + (overhead >= 0 ? ", own CPU " + fmt(overhead, 2) + "% of one core" : "")
-                    + ", " + p.cachedClasses() + " classes cached");
+                    + ", " + p.cachedClasses() + " classes cached"
+                    + (plugin.jfr() != null && plugin.jfr().active() ? ", JFR on" : ", JFR off"));
         }
         sender.sendMessage(" JVM heap: " + used + " / " + rt.maxMemory() / MB + " MB");
     }

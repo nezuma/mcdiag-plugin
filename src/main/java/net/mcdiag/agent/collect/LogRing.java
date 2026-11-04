@@ -9,7 +9,7 @@ import java.util.logging.LogRecord;
 import java.util.logging.SimpleFormatter;
 
 /**
- * Последние строки лога плагинов в памяти. Наружу они уходят только вместе с лаг-спайком:
+ * Последние предупреждения и ошибки плагинов в памяти. Наружу они уходят только вместе с лаг-спайком:
  * постоянного сбора логов нет. Строки ядра, которые идут только через Log4j, сюда не попадают.
  *
  * <p>{@link #publish} вызывается в потоке того, кто пишет в лог, в том числе в главном, поэтому
@@ -37,7 +37,7 @@ public final class LogRing extends Handler {
     public LogRing(TextMask mask, BooleanSupplier active) {
         this.mask = mask;
         this.active = active;
-        setLevel(Level.INFO);
+        setLevel(Level.WARNING);
     }
 
     /** {@code /diag reload} мог изменить список скрытых команд. */
@@ -50,7 +50,7 @@ public final class LogRing extends Handler {
 
     @Override
     public void publish(LogRecord record) {
-        if (record == null || record.getLevel().intValue() < Level.INFO.intValue() || !active.getAsBoolean()) {
+        if (record == null || record.getLevel().intValue() < Level.WARNING.intValue() || !active.getAsBoolean()) {
             return;
         }
         try {

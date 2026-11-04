@@ -6,9 +6,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import net.mcdiag.agent.McDiagPlugin;
 import net.mcdiag.agent.collect.LogRing;
+import net.mcdiag.agent.insight.GcWatch;
+import net.mcdiag.agent.insight.JfrInsight;
 import net.mcdiag.agent.json.Json;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
@@ -46,6 +49,19 @@ public final class Profiler implements Runnable {
     private static final int SPIKES_WITH_LOGS = 3;
     private static final long SPIKE_LOG_WINDOW_MS = 60_000;
     private static final int SPIKE_LOG_LINES = 20;
+    /** Подробный разбор: столько спайков за минуту, при шторме остальные идут кратко */
+    private static final int SPIKES_WITH_INSIGHT = 10;
+    /** И за час: в затяжной шторм спайки похожи, а место в базе не бесконечно */
+    private static final int INSIGHTS_PER_HOUR = 120;
+    private static final long HOUR_MS = 3_600_000;
+    private int insightsThisHour;
+    private long hourStartedAt;
+    /** GC и JFR сообщают о событиях с задержкой: спайк ждёт их перед отправкой */
+    private static final long INSIGHT_DELAY_MS = 2_500;
+    private static final int MAX_PENDING = 64;
+    private static final int MAX_EXTERNAL = 8;
+    private final ArrayDeque<PendingSpike> pending = new ArrayDeque<>();
+    private int insightsThisMinute;
     private int sentSpikes;
 
     private volatile boolean running = true;
@@ -63,7 +79,7 @@ public final class Profiler implements Runnable {
     private volatile long selfCpuNs;
     private volatile long startedAt;
 
-    public Profiler(McDiagPlugin plugin, Thread mainThread, TickMonitor ticks, long intervalMs, boolean asyncEnabled) {
+    public Profiler(McDiagPlugin plugin, Thread mainThread, TickMonitor ticks, long intervalMs, long denseMs, boolean asyncEnabled) {
         this.plugin = plugin;
         this.ticks = ticks;
         this.intervalMs = intervalMs;
@@ -71,7 +87,7 @@ public final class Profiler implements Runnable {
         this.lookup = new PluginLookup(plugin.getLogger());
         this.attributor = new StackAttributor(lookup);
         this.async = new AsyncTracker(mainThread.getId());
-        this.sampler = new MainThreadSampler(mainThread, ticks, attributor, intervalMs);
+        this.sampler = new MainThreadSampler(mainThread, ticks, attributor, intervalMs, denseMs);
     }
 
     public void start() {
@@ -92,7 +108,6 @@ public final class Profiler implements Runnable {
 
     @Override
     public void run() {
-        long prev = System.nanoTime();
         long nextAsync = 0;
         long nextSelfCpu = 0;
         long delay = intervalMs;
@@ -103,14 +118,11 @@ public final class Profiler implements Runnable {
                 break;
             }
             try {
-                long now = System.nanoTime();
-                // Вес сэмпла — реально прошедшее время (интервал случайный, а sleep неточен).
-                double weightMs = Math.min((now - prev) / 1_000_000.0, sampler.maxWeightMs());
-                prev = now;
                 long wall = System.currentTimeMillis();
                 ensureWindow(wall);
-                delay = sampler.sample(window, weightMs);
-                drainSpikes();
+                delay = sampler.step(window);
+                drainSpikes(wall);
+                flushPending(wall);
                 if (asyncEnabled && wall >= nextAsync) {
                     async.collect(window, attributor, pluginNames, wall);
                     nextAsync = wall + ASYNC_PERIOD_MS;
@@ -126,25 +138,39 @@ public final class Profiler implements Runnable {
         }
     }
 
-    /** Долгие тики: кто занимал главный поток по сэмплам именно этого тика. */
-    private void drainSpikes() {
+    /** Долгие тики: кто занимал главный поток по сэмплам именно этого тика и что он делал. */
+    private void drainSpikes(long wall) {
         TickMonitor.Spike spike;
         while ((spike = ticks.pollSpike()) != null) {
             List<String> owners = new ArrayList<>();
             List<String> frames = new ArrayList<>();
-            sampler.collect(spike.tick(), owners, frames);
+            List<SpikeAnalyzer.Sample> samples = new ArrayList<>();
+            sampler.collect(spike.tick(), owners, frames, samples);
             SpikeRecord record = owners.isEmpty()
                     ? new SpikeRecord(spike.startedAt(), spike.ms(), List.of())
                     : SpikeRecord.of(spike.startedAt(), spike.ms(), owners);
             if (plugin.panel().richSpikes()) {
-                // Новая панель: спайк уходит сразу с ближайшим батчем, а не с минутным срезом.
+                // Новая панель: спайк уходит отдельно и почти сразу, а не с минутным срезом.
                 LogRing ring = plugin.logRing();
                 List<LogRing.Line> logs = ring != null && sentSpikes < SPIKES_WITH_LOGS
                         ? ring.recent(spike.startedAt() - SPIKE_LOG_WINDOW_MS, SPIKE_LOG_LINES)
                         : List.of();
                 SpikeRecord rich = new SpikeRecord(record.ts(), record.ms(), record.top(),
                         frames.isEmpty() ? List.of() : SpikeRecord.shares(frames, SpikeRecord.MAX_HOT), logs);
-                plugin.buffer().addSpike(rich.richJson());
+                SpikeAnalyzer.Result insight = null;
+                if (wall - hourStartedAt >= HOUR_MS) {
+                    hourStartedAt = wall;
+                    insightsThisHour = 0;
+                }
+                if (insightsThisMinute < SPIKES_WITH_INSIGHT && insightsThisHour < INSIGHTS_PER_HOUR) {
+                    insightsThisMinute++;
+                    insightsThisHour++;
+                    long end = spike.startNanos() + (long) (spike.ms() * 1_000_000);
+                    insight = SpikeAnalyzer.analyze(samples, spike.startNanos(), end);
+                }
+                if (pending.size() < MAX_PENDING) {
+                    pending.addLast(new PendingSpike(rich, insight, sampler.allocatedInTick(spike.tick()), wall + INSIGHT_DELAY_MS));
+                }
                 sentSpikes++;
             } else if (windowSpikes.size() < 20) {
                 windowSpikes.add(record);
@@ -156,6 +182,82 @@ public final class Profiler implements Runnable {
                 recentSpikes.addLast(record);
             }
         }
+    }
+
+    private void flushPending(long wall) {
+        PendingSpike next;
+        while ((next = pending.peekFirst()) != null && wall >= next.readyAt()) {
+            pending.pollFirst();
+            plugin.buffer().addSpike(next.record().richJson(plugin.panel().insight() ? insightJson(next) : null));
+        }
+    }
+
+    private String insightJson(PendingSpike item) {
+        if (item.insight() == null) {
+            return null;
+        }
+        long from = item.record().ts();
+        long to = from + (long) item.record().ms();
+        GcWatch gc = plugin.gcWatch();
+        JfrInsight jfr = plugin.jfr();
+        boolean jfrOn = jfr != null && jfr.active();
+        return insightJson(item.insight(), item.allocated(),
+                gc == null ? null : gc.overlapping(from, to),
+                jfrOn ? jfr.vmOverlapping(from, to) : null,
+                jfrOn ? jfr.ioOverlapping(from, to) : null,
+                plugin.mask()::text);
+    }
+
+    /** Поле {@code x} спайка. Списков нет, если источник недоступен: панель покажет только то, что известно. */
+    static String insightJson(SpikeAnalyzer.Result insight, long allocated, List<GcWatch.Pause> pauses,
+                              List<JfrInsight.VmStop> stops, List<JfrInsight.Io> io, UnaryOperator<String> mask) {
+        StringBuilder sb = new StringBuilder(1024).append('{');
+        SpikeAnalyzer.appendJson(sb, insight);
+        if (allocated >= 0) {
+            sb.append(",\"alloc\":").append(allocated);
+        }
+        if (pauses != null) {
+            sb.append(",\"gc\":[");
+            for (int i = 0; i < Math.min(pauses.size(), MAX_EXTERNAL); i++) {
+                GcWatch.Pause pause = pauses.get(i);
+                sb.append(i > 0 ? ",{\"at\":" : "{\"at\":").append(pause.startMs());
+                Json.str(sb.append(",\"n\":"), pause.name(), 64);
+                sb.append(",\"ms\":").append(pause.ms()).append(",\"b\":").append(pause.beforeMb()).append(",\"a\":").append(pause.afterMb());
+                Json.str(sb.append(",\"c\":"), pause.cause(), 64).append('}');
+            }
+            sb.append(']');
+        }
+        if (stops != null) {
+            sb.append(",\"vm\":[");
+            for (int i = 0; i < Math.min(stops.size(), MAX_EXTERNAL); i++) {
+                JfrInsight.VmStop stop = stops.get(i);
+                sb.append(i > 0 ? ",{\"at\":" : "{\"at\":").append(stop.startMs());
+                Json.str(sb.append(",\"op\":"), stop.operation(), 64).append(",\"ms\":").append(stop.ms());
+                if (stop.caller() != null) {
+                    Json.str(sb.append(",\"by\":"), stop.caller(), 64);
+                }
+                sb.append('}');
+            }
+            sb.append(']');
+        }
+        if (io != null) {
+            sb.append(",\"io\":[");
+            for (int i = 0; i < Math.min(io.size(), MAX_EXTERNAL); i++) {
+                JfrInsight.Io item = io.get(i);
+                sb.append(i > 0 ? ",{\"at\":" : "{\"at\":").append(item.startMs());
+                Json.str(sb.append(",\"k\":"), item.kind(), 16).append(",\"ms\":").append(item.ms());
+                Json.str(sb.append(",\"t\":"), mask.apply(item.target()), 120);
+                if (item.plugin() != null) {
+                    Json.str(sb.append(",\"o\":"), item.plugin(), 64);
+                }
+                sb.append('}');
+            }
+            sb.append(']');
+        }
+        return sb.append('}').toString();
+    }
+
+    private record PendingSpike(SpikeRecord record, SpikeAnalyzer.Result insight, long allocated, long readyAt) {
     }
 
     private void ensureWindow(long wall) {
@@ -185,6 +287,7 @@ public final class Profiler implements Runnable {
         String json = done.toJson(stats, online, null, windowSpikes, sentSpikes);
         windowSpikes.clear();
         sentSpikes = 0;
+        insightsThisMinute = 0;
         last = new Summary(done.startMs(), stats, done.busyMs(), done.coreMs(), done.top(10));
         if (plugin.cfg().canSend()) {
             plugin.buffer().addProfile(json);
@@ -202,6 +305,10 @@ public final class Profiler implements Runnable {
             pluginsHash = setHash;
             pluginNames = Arrays.stream(plugins).map(Plugin::getName).filter(ProfileWindow::validName)
                     .toArray(String[]::new);
+            JfrInsight jfr = plugin.jfr();
+            if (jfr != null) {
+                jfr.setPluginNames(pluginNames);
+            }
         }
         StringBuilder sb = new StringBuilder(plugins.length * 48).append('[');
         int n = 0;
@@ -255,6 +362,11 @@ public final class Profiler implements Runnable {
             return -1;
         }
         return cpu / 1_000_000.0 / elapsed * 100;
+    }
+
+    /** Плагин по имени потока — для карты памяти. */
+    public String pluginOfThread(String threadName) {
+        return AsyncTracker.pluginFromName(threadName, pluginNames);
     }
 
     /** Снимков стека в секунду с момента запуска. */

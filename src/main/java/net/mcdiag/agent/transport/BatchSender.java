@@ -108,7 +108,7 @@ public final class BatchSender implements Runnable {
             clearPending();
             PanelState panel = plugin.panel();
             panel.update(res.body());
-            plugin.buffer().clearOptional(!panel.chat() && !panel.commands(), !panel.richSpikes());
+            plugin.buffer().clearOptional(!panel.commands(), !panel.richSpikes());
             plugin.remote().accept(RemoteCommandParser.parse(res.body()));
             failures = 0;
             sentBatches++;
@@ -180,6 +180,7 @@ public final class BatchSender implements Runnable {
         items += section(sb, "metrics", budget, buffer::drainMetrics);
         items += optional(sb, "profile", budget, buffer::drainProfiles);
         items += optional(sb, "system", budget, buffer::drainSystem);
+        items += optional(sb, "memory", budget, buffer::drainMemory);
         String inventory = budget[0] > 512 ? buffer.takeInventory(budget[0] - 32) : null;
         if (inventory != null) {
             sb.append(",\"inventory\":").append(inventory);

@@ -18,6 +18,8 @@ public final class TickMonitor implements Listener {
     /** Номер текущего тика; профилировщик помечает им сэмплы */
     private volatile long tickSeq;
     private volatile boolean inTick;
+    private volatile long tickStartNanos;
+    private volatile double lastTickMs;
     private volatile double spikeThresholdMs;
 
     // Под монитором this: пишет главный поток раз за тик, читает профилировщик раз в минуту.
@@ -43,12 +45,14 @@ public final class TickMonitor implements Listener {
     }
 
     void tickStarted(long tick) {
+        tickStartNanos = System.nanoTime();
         tickSeq = tick;
         inTick = true;
     }
 
     void tickEnded(long tick, double ms) {
         inTick = false;
+        lastTickMs = ms;
         synchronized (this) {
             ticks++;
             sumMs += ms;
@@ -56,10 +60,22 @@ public final class TickMonitor implements Listener {
                 maxMs = ms;
             }
             if (ms >= spikeThresholdMs && spikes.size() < MAX_PENDING_SPIKES) {
-                spikes.addLast(new Spike(tick, System.currentTimeMillis() - (long) ms, ms));
+                spikes.addLast(new Spike(tick, System.currentTimeMillis() - (long) ms, ms, tickStartNanos));
                 hasSpikes = true;
             }
         }
+    }
+
+    public double spikeThresholdMs() {
+        return spikeThresholdMs;
+    }
+
+    public long tickStartNanos() {
+        return tickStartNanos;
+    }
+
+    public double lastTickMs() {
+        return lastTickMs;
     }
 
     public void setSpikeThreshold(double ms) {
@@ -95,7 +111,7 @@ public final class TickMonitor implements Listener {
         return s;
     }
 
-    public record Spike(long tick, long startedAt, double ms) {
+    public record Spike(long tick, long startedAt, double ms, long startNanos) {
     }
 
     public record TickStats(long ticks, double avgMs, double maxMs) {

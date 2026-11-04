@@ -34,10 +34,13 @@ public final class RemoteCommands {
     private static final int MAX_PROFILE_SEC = 120;
     /** Последние id — повтор той же команды (например, после ретрая батча) не выполняется дважды */
     private static final int SEEN = 64;
+    private static final int MIN_LEAK_SEC = 60;
+    private static final int MAX_LEAK_SEC = 3600;
 
     private final McDiagPlugin plugin;
     private final ArrayDeque<String> seen = new ArrayDeque<>(SEEN);
     private ExecutorService executor;
+    private Thread leakThread;
 
     public RemoteCommands(McDiagPlugin plugin) {
         this.plugin = plugin;
@@ -53,6 +56,11 @@ public final class RemoteCommands {
                 seen.pollFirst();
             }
             seen.addLast(c.id());
+            // Поиск утечки идёт минуты и не должен задерживать остальные команды.
+            if (c.type().equals("leak_scan")) {
+                startLeakScan(c);
+                continue;
+            }
             if (executor == null) {
                 executor = Executors.newSingleThreadExecutor(r -> {
                     Thread t = new Thread(r, "MCDiag Remote");
@@ -69,7 +77,35 @@ public final class RemoteCommands {
         }
     }
 
+    private void startLeakScan(RemoteCommand c) {
+        if (leakThread != null && leakThread.isAlive()) {
+            respond(c, null, "already running");
+            return;
+        }
+        int seconds = Math.max(MIN_LEAK_SEC, Math.min(MAX_LEAK_SEC, c.seconds() == 0 ? 900 : c.seconds()));
+        leakThread = new Thread(() -> runLeakScan(c, seconds), "MCDiag Leak Scan");
+        leakThread.setDaemon(true);
+        leakThread.setPriority(Thread.NORM_PRIORITY - 1);
+        leakThread.start();
+    }
+
+    private void runLeakScan(RemoteCommand c, int seconds) {
+        try {
+            PluginLookup lookup = lookup();
+            respond(c, net.mcdiag.agent.insight.LeakScan.run(seconds, lookup), null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Throwable e) {
+            plugin.getLogger().log(Level.FINE, "leak scan failed", e);
+            respond(c, null, e.getClass().getSimpleName());
+        }
+    }
+
     public synchronized void shutdown() {
+        if (leakThread != null) {
+            leakThread.interrupt();
+            leakThread = null;
+        }
         if (executor != null) {
             executor.shutdownNow();
             executor = null;
@@ -100,7 +136,11 @@ public final class RemoteCommands {
             data = null;
             error = e.getClass().getSimpleName();
         }
-        plugin.getLogger().info("Support diagnostics: " + c.type() + (error == null ? " done" : " failed: " + error));
+        respond(c, data, error);
+    }
+
+    private void respond(RemoteCommand c, String data, String error) {
+        plugin.getLogger().info("Diagnostics: " + c.type() + (error == null ? " done" : " failed: " + error));
         StringBuilder sb = new StringBuilder(256).append("{\"id\":\"").append(c.id()).append("\",\"type\":");
         Json.str(sb, c.type(), 32).append(",\"ts\":").append(System.currentTimeMillis())
                 .append(",\"ok\":").append(error == null);

@@ -43,14 +43,14 @@ class TextMaskTest {
 
     @Test
     void chatLineIsSafeForPanelSchema() {
-        assertEquals("Steve_1", ChatListener.safeNick("Steve_1"));
-        assertEquals(".BedrockKid", ChatListener.safeNick(".BedrockKid"));
-        assertEquals("unknown", ChatListener.safeNick("имя"));
-        assertEquals(null, ChatListener.safeNick(null));
+        assertEquals("Steve_1", CommandListener.safeNick("Steve_1"));
+        assertEquals(".BedrockKid", CommandListener.safeNick(".BedrockKid"));
+        assertEquals("unknown", CommandListener.safeNick("имя"));
+        assertEquals(null, CommandListener.safeNick(null));
         assertEquals("{\"ts\":5,\"k\":\"cmd\",\"n\":\"Steve\",\"t\":\"//set stone\",\"p\":\"WorldEdit\",\"w\":\"world\"}",
-                ChatListener.line(5, "cmd", "Steve", "world", "//set stone", "WorldEdit"));
-        assertEquals("{\"ts\":5,\"k\":\"console\",\"t\":\"stop\"}", ChatListener.line(5, "console", null, null, "stop", null));
-        assertEquals("{\"ts\":5,\"k\":\"chat\",\"n\":\"S\",\"t\":\"\\u043f\"}", ChatListener.line(5, "chat", "S", null, "п", "bad/name"));
+                CommandListener.line(5, "cmd", "Steve", "world", "//set stone", "WorldEdit"));
+        assertEquals("{\"ts\":5,\"k\":\"console\",\"t\":\"stop\"}", CommandListener.line(5, "console", null, null, "stop", null));
+        assertEquals("{\"ts\":5,\"k\":\"chat\",\"n\":\"S\",\"t\":\"\\u043f\"}", CommandListener.line(5, "chat", "S", null, "п", "bad/name"));
     }
 
     @Test
@@ -61,7 +61,8 @@ class TextMaskTest {
         old.setMillis(now - 120_000);
         ring.publish(old);
         ring.publish(new LogRecord(Level.FINE, "отладка"));
-        ring.publish(new LogRecord(Level.INFO, "Steve issued server command: /login hunter2"));
+        ring.publish(new LogRecord(Level.INFO, "обычная строка не хранится"));
+        ring.publish(new LogRecord(Level.WARNING, "Steve issued server command: /login hunter2"));
         LogRecord line = new LogRecord(Level.WARNING, "ошибка с 1.2.3.4");
         line.setLoggerName("WorldEdit");
         ring.publish(line);
@@ -71,13 +72,13 @@ class TextMaskTest {
         assertEquals("ошибка с ***", recent.get(0).message());
         assertEquals("WorldEdit", recent.get(0).logger());
         for (int i = 0; i < 300; i++) {
-            ring.publish(new LogRecord(Level.INFO, "x" + i));
+            ring.publish(new LogRecord(Level.WARNING, "x" + i));
         }
         List<LogRing.Line> capped = ring.recent(now - 60_000, 5);
         assertEquals(5, capped.size());
         assertEquals("x299", capped.get(4).message(), "от старых к новым");
         assertFalse(capped.stream().anyMatch(l -> l.message().contains("hunter2")));
-        assertTrue(capped.stream().allMatch(l -> l.level().equals("INFO")));
+        assertTrue(capped.stream().allMatch(l -> l.level().equals("WARNING")));
     }
 
     @Test
@@ -86,13 +87,13 @@ class TextMaskTest {
         java.util.concurrent.atomic.AtomicBoolean active = new java.util.concurrent.atomic.AtomicBoolean(false);
         LogRing ring = new LogRing(mask, active::get);
         long now = System.currentTimeMillis();
-        java.util.logging.LogRecord skipped = new java.util.logging.LogRecord(java.util.logging.Level.INFO, "before");
+        java.util.logging.LogRecord skipped = new java.util.logging.LogRecord(java.util.logging.Level.WARNING, "before");
         skipped.setMillis(now);
         ring.publish(skipped);
         assertEquals(0, ring.recent(now - 1000, 20).size());
 
         active.set(true);
-        java.util.logging.LogRecord line = new java.util.logging.LogRecord(java.util.logging.Level.INFO, "from 10.1.2.3 {0}");
+        java.util.logging.LogRecord line = new java.util.logging.LogRecord(java.util.logging.Level.WARNING, "from 10.1.2.3 {0}");
         line.setMillis(now);
         line.setParameters(new Object[] {"param"});
         ring.publish(line);
@@ -115,9 +116,9 @@ class TextMaskTest {
 
     @Test
     void cleansNicknamesWithoutRegex() {
-        assertEquals("Steve_1", ChatListenerAccess.safeNick("Steve_1"));
-        assertEquals("Stve", ChatListenerAccess.safeNick("St\u00e9ve"));
-        assertEquals("unknown", ChatListenerAccess.safeNick("\u00e9\u00e9"));
-        assertEquals("unknown", ChatListenerAccess.safeNick(""));
+        assertEquals("Steve_1", CommandListenerAccess.safeNick("Steve_1"));
+        assertEquals("Stve", CommandListenerAccess.safeNick("St\u00e9ve"));
+        assertEquals("unknown", CommandListenerAccess.safeNick("\u00e9\u00e9"));
+        assertEquals("unknown", CommandListenerAccess.safeNick(""));
     }
 }

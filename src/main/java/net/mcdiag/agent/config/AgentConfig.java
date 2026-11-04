@@ -32,6 +32,8 @@ public record AgentConfig(
         int spikeThresholdMs,
         boolean profilerAsync,
         boolean spikeLogs,
+        int spikeIntervalMs,
+        boolean jfrInsight,
         boolean chatLogAllowed,
         List<String> hiddenCommands,
         String problem) {
@@ -81,6 +83,8 @@ public record AgentConfig(
                 clamp(profiler == null ? 100 : profiler.getInt("spike_threshold_ms", 100), 50, 10_000),
                 flag(profiler, "async"),
                 c.getBoolean("profiler.spike_logs", true),
+                clamp(c.getInt("profiler.spike_interval_ms", 5), 2, 50),
+                c.getBoolean("profiler.jfr", true),
                 // Журнал включает владелец на сайте; здесь можно запретить его совсем.
                 c.getBoolean("chat_log.allowed", true),
                 List.copyOf(c.getStringList("chat_log.hidden_commands")),

@@ -1,27 +1,23 @@
 package net.mcdiag.agent.collect;
 
-import io.papermc.paper.event.player.AsyncChatEvent;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import java.util.logging.Level;
 import net.mcdiag.agent.McDiagPlugin;
 import net.mcdiag.agent.json.Json;
 import net.mcdiag.agent.profiler.ProfileWindow;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
-import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.command.PluginIdentifiableCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
-import org.bukkit.event.server.RemoteServerCommandEvent;
-import org.bukkit.event.server.ServerCommandEvent;
 
 /**
- * Журнал чата и команд. Работает, только если владелец включил его на сайте; иначе обработчики
- * сразу выходят. Команды командных блоков не пишутся: они срабатывают каждый тик и засоряют журнал.
+ * Журнал команд игроков. Работает, только если владелец включил его на сайте; иначе обработчик
+ * сразу выходит. Чат, консоль и командные блоки не записываются.
  */
-public final class ChatListener implements Listener {
+public final class CommandListener implements Listener {
 
     private static final int MAX_TEXT = 256;
     private static final int MAX_NICK = 32;
@@ -29,17 +25,8 @@ public final class ChatListener implements Listener {
 
     private final McDiagPlugin plugin;
 
-    public ChatListener(McDiagPlugin plugin) {
+    public CommandListener(McDiagPlugin plugin) {
         this.plugin = plugin;
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onChat(AsyncChatEvent event) {
-        if (!plugin.chatEnabled()) {
-            return;
-        }
-        String text = PlainTextComponentSerializer.plainText().serialize(event.message());
-        add("chat", event.getPlayer(), plugin.mask().text(text), null);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -47,28 +34,17 @@ public final class ChatListener implements Listener {
         if (!plugin.commandsEnabled()) {
             return;
         }
-        String line = event.getMessage();
-        add("cmd", event.getPlayer(), plugin.mask().command(line), ownerOf(line));
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onConsole(ServerCommandEvent event) {
-        if (plugin.commandsEnabled() && event.getSender() instanceof ConsoleCommandSender) {
-            add("console", null, plugin.mask().command(event.getCommand()), ownerOf(event.getCommand()));
-        }
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onRcon(RemoteServerCommandEvent event) {
-        if (plugin.commandsEnabled()) {
-            add("console", null, plugin.mask().command(event.getCommand()), ownerOf(event.getCommand()));
+        // Исключение здесь Bukkit написал бы в консоль сервера как ошибку.
+        try {
+            String line = event.getMessage();
+            add("cmd", event.getPlayer(), plugin.mask().command(line), ownerOf(line));
+        } catch (RuntimeException | LinkageError e) {
+            plugin.getLogger().log(Level.FINE, "command log failed", e);
         }
     }
 
     private void add(String kind, Player player, String text, String owner) {
-        plugin.buffer().addChat(line(System.currentTimeMillis(), kind,
-                player == null ? null : player.getName(),
-                player == null ? null : player.getWorld().getName(), text, owner));
+        plugin.buffer().addChat(line(System.currentTimeMillis(), kind, player.getName(), player.getWorld().getName(), text, owner));
     }
 
     /** Элемент поля {@code chatlog} батча. */

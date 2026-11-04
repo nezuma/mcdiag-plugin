@@ -33,6 +33,7 @@ public final class TelemetryBuffer {
     private final ArrayDeque<String> results = new ArrayDeque<>(MAX_RESULTS);
     private final ArrayDeque<String> chat = new ArrayDeque<>();
     private final ArrayDeque<String> spikes = new ArrayDeque<>();
+    private final ArrayDeque<String> memory = new ArrayDeque<>();
     /** Список плагинов сервера: важна только последняя версия */
     private String inventory;
     private int maxEvents;
@@ -81,6 +82,10 @@ public final class TelemetryBuffer {
         addBounded(chat, MAX_CHAT, json);
     }
 
+    public void addMemory(String json) {
+        addBounded(memory, MAX_SYSTEM, json);
+    }
+
     public void addSpike(String json) {
         addBounded(spikes, MAX_SPIKES, json);
     }
@@ -88,6 +93,10 @@ public final class TelemetryBuffer {
     /** Панель выключила журнал или отклонила батч: ничего из этого больше не отправляем. */
     public void clearOptional(boolean clearChat, boolean clearSpikes) {
         synchronized (lock) {
+            if (clearSpikes) {
+                memory.forEach(line -> chars -= line.length());
+                memory.clear();
+            }
             if (clearChat) {
                 chat.forEach(line -> chars -= line.length());
                 chat.clear();
@@ -159,6 +168,12 @@ public final class TelemetryBuffer {
         }
     }
 
+    public int drainMemory(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(memory, sb, MAX_SYSTEM, maxChars);
+        }
+    }
+
     public int drainSpikes(StringBuilder sb, int maxChars) {
         synchronized (lock) {
             return drain(spikes, sb, MAX_SPIKES, maxChars);
@@ -193,7 +208,7 @@ public final class TelemetryBuffer {
     public boolean isEmpty() {
         synchronized (lock) {
             return events.isEmpty() && metrics.isEmpty() && profiles.isEmpty() && system.isEmpty()
-                    && results.isEmpty() && chat.isEmpty() && spikes.isEmpty() && inventory == null;
+                    && results.isEmpty() && chat.isEmpty() && spikes.isEmpty() && memory.isEmpty() && inventory == null;
         }
     }
 
