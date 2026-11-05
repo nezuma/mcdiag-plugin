@@ -42,7 +42,7 @@ public final class ErrorCaptureHandler extends Handler {
     public void publish(LogRecord record) {
         if (record == null || record.getThrown() == null
                 || record.getLevel().intValue() < Level.SEVERE.intValue()
-                || !plugin.cfg().collectErrors()) {
+                || !plugin.cfg().collectErrors() || plugin.panel().free()) {
             return;
         }
         if (!acquire(plugin.cfg().maxErrorsPerMinute())) {

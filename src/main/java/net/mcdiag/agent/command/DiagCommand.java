@@ -7,6 +7,7 @@ import java.util.Locale;
 import net.mcdiag.agent.McDiagPlugin;
 import net.mcdiag.agent.buffer.TelemetryBuffer;
 import net.mcdiag.agent.config.AgentConfig;
+import net.mcdiag.agent.heatmap.HeatmapControl;
 import net.mcdiag.agent.profiler.FrameClassifier;
 import net.mcdiag.agent.profiler.ProfileWindow;
 import net.mcdiag.agent.profiler.Profiler;
@@ -20,7 +21,7 @@ import org.bukkit.command.TabExecutor;
 /** /diag status | plugins | spikes | token [value] | reload */
 public final class DiagCommand implements TabExecutor {
 
-    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "spikes", "token", "reload");
+    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "spikes", "token", "reload", "pos1", "pos2", "poi", "heatmap");
     private static final long MB = 1024 * 1024;
 
     private final McDiagPlugin plugin;
@@ -37,6 +38,9 @@ public final class DiagCommand implements TabExecutor {
             case "plugins" -> plugins(sender);
             case "spikes" -> spikes(sender);
             case "token" -> token(sender, args);
+            case "pos1", "pos2" -> plugin.heatmap().setPos(sender, sub);
+            case "poi" -> plugin.heatmap().poi(sender, args);
+            case "heatmap" -> plugin.heatmap().command(sender, args);
             case "reload" -> {
                 String problem = plugin.reload();
                 sender.sendMessage("[MCDiag] Reloaded" + (problem == null ? "" : " — " + problem));
@@ -50,6 +54,9 @@ public final class DiagCommand implements TabExecutor {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (args.length == 2 && args[0].equalsIgnoreCase("heatmap")) {
+            return HeatmapControl.subcommands().stream().filter(x -> x.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+        }
         if (args.length != 1) {
             return List.of();
         }
@@ -87,6 +94,9 @@ public final class DiagCommand implements TabExecutor {
                     + (overhead >= 0 ? ", own CPU " + fmt(overhead, 2) + "% of one core" : "")
                     + ", " + p.cachedClasses() + " classes cached"
                     + (plugin.jfr() != null && plugin.jfr().active() ? ", JFR on" : ", JFR off"));
+        }
+        if (plugin.panel().free()) {
+            sender.sendMessage(" Mode: free. Only basic metrics are sent, once per 5 minutes.");
         }
         sender.sendMessage(" JVM heap: " + used + " / " + rt.maxMemory() / MB + " MB");
     }

@@ -51,4 +51,20 @@ class PanelStateTest {
         panel.update(null);
         assertFalse(panel.commands());
     }
+
+    @Test
+    void freeModeFollowsThePanel() {
+        PanelState panel = new PanelState();
+        panel.update("{\"data\":{\"tier\":\"full\",\"caps\":[\"spikes\",\"heatmap\"]}}");
+        assertFalse(panel.free());
+        assertTrue(panel.heatmap());
+        panel.update("{\"data\":{\"caps\":[],\"chatlog\":{\"chat\":false,\"cmd\":false},\"tier\":\"free\"}}");
+        assertTrue(panel.free());
+        assertFalse(panel.heatmap());
+        panel.update("{\"data\":{\"tier\":\"frozen\"}}");
+        assertTrue(panel.free());
+        // Панель без поля tier — старая, агент работает как раньше.
+        panel.update("{\"data\":{\"duplicate\":false}}");
+        assertFalse(panel.free());
+    }
 }

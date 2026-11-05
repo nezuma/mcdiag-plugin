@@ -15,9 +15,11 @@ import org.bukkit.World;
 public final class MetricsTask implements Runnable {
 
     private static final long BUCKET_MS = 5_000;
+    private static final long FREE_POINT_MS = 290_000;
 
     private final McDiagPlugin plugin;
     private volatile int entities = -1;
+    private long lastFreePoint;
     private volatile int chunks = -1;
     private volatile int tiles = -1;
 
@@ -29,6 +31,14 @@ public final class MetricsTask implements Runnable {
     public void run() {
         if (!plugin.cfg().collectMetrics()) {
             return;
+        }
+        // Бесплатный режим: отправляется одна точка в 5 минут, чаще считать незачем.
+        if (plugin.panel().free()) {
+            long now = System.currentTimeMillis();
+            if (now - lastFreePoint < FREE_POINT_MS) {
+                return;
+            }
+            lastFreePoint = now;
         }
         double tps = Math.min(20.0, Bukkit.getTPS()[0]);
         double mspt = Math.min(10_000.0, Bukkit.getAverageTickTime());
@@ -54,7 +64,7 @@ public final class MetricsTask implements Runnable {
     public Runnable entitySampler() {
         WorldCounter counter = new WorldCounter();
         return () -> {
-            if (!plugin.cfg().collectMetrics()) {
+            if (!plugin.cfg().collectMetrics() || plugin.panel().free()) {
                 return;
             }
             List<WorldProbe> worlds = new ArrayList<>();

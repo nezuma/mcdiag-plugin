@@ -12,9 +12,13 @@ public final class PanelState {
     private static final Pattern CAPS = Pattern.compile("\"caps\":\\[([^\\]]*)\\]");
     private static final Pattern CHATLOG = Pattern.compile("\"chatlog\":\\{(?:\"chat\":(?:true|false),)?\"cmd\":(true|false)\\}");
 
+    private static final Pattern TIER = Pattern.compile("\"tier\":\"(full|free|frozen)\"");
+
     private volatile boolean richSpikes;
     private volatile boolean insight;
     private volatile boolean memory;
+    private volatile boolean heatmap;
+    private volatile boolean free;
     private volatile boolean commands;
 
     /** Успешный ответ панели. Нет {@code caps} — панель старая, работаем в прежнем формате. */
@@ -29,6 +33,9 @@ public final class PanelState {
         boolean found = list.contains("\"chatlog\"") && log.find();
         insight = list.contains("\"insight\"");
         memory = list.contains("\"memory\"");
+        heatmap = list.contains("\"heatmap\"");
+        Matcher tier = TIER.matcher(body);
+        free = tier.find() && !tier.group(1).equals("full");
         commands = found && log.group(1).equals("true");
     }
 
@@ -37,7 +44,19 @@ public final class PanelState {
         richSpikes = false;
         insight = false;
         memory = false;
+        heatmap = false;
+        free = false;
         commands = false;
+    }
+
+    /** Панель принимает тепловую карту. */
+    public boolean heatmap() {
+        return heatmap;
+    }
+
+    /** Тариф закончился или сервер заморожен: агент почти ничего не делает и шлёт одну точку в 5 минут. */
+    public boolean free() {
+        return free;
     }
 
     public boolean richSpikes() {

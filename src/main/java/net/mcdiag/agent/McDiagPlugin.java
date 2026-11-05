@@ -12,6 +12,7 @@ import net.mcdiag.agent.collect.SystemStats;
 import net.mcdiag.agent.collect.TextMask;
 import net.mcdiag.agent.command.DiagCommand;
 import net.mcdiag.agent.config.AgentConfig;
+import net.mcdiag.agent.heatmap.HeatmapControl;
 import net.mcdiag.agent.insight.GcWatch;
 import net.mcdiag.agent.insight.JfrInsight;
 import net.mcdiag.agent.insight.MemoryStats;
@@ -55,6 +56,7 @@ public final class McDiagPlugin extends JavaPlugin {
     private volatile GcWatch gcWatch;
     private volatile JfrInsight jfr;
     private MemoryStats memory;
+    private HeatmapControl heatmap;
 
     @Override
     public void onEnable() {
@@ -66,6 +68,7 @@ public final class McDiagPlugin extends JavaPlugin {
         remote = new RemoteCommands(this);
         system = new SystemStats(json -> buffer.addSystem(json));
         memory = new MemoryStats();
+        heatmap = new HeatmapControl(this);
         // Интервал отправки меняется по /diag reload, поэтому блок plugin собирается на каждый батч.
         sender = new BatchSender(this, new HttpTransport("MCDiag-Agent/" + getDescription().getVersion()),
                 () -> pluginStatic.substring(0, pluginStatic.length() - 1) + ",\"batchIntervalSec\":" + cfg.batchIntervalSec() + "}");
@@ -91,6 +94,9 @@ public final class McDiagPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (heatmap != null) {
+            heatmap.stop();
+        }
         Bukkit.getScheduler().cancelTasks(this);
         stopProfiler();
         if (remote != null) {
@@ -111,6 +117,7 @@ public final class McDiagPlugin extends JavaPlugin {
         loadConfigSnapshot();
         buffer.resize(cfg.maxBufferSize());
         sender.resetBackoff();
+        heatmap.stop();
         Bukkit.getScheduler().cancelTasks(this);
         stopProfiler();
         scheduleTasks();
@@ -186,7 +193,7 @@ public final class McDiagPlugin extends JavaPlugin {
 
     /** Хендлер стоит на каждой строке лога сервера, поэтому без спайков с логами его нет вовсе. */
     private void syncLogRing() {
-        if (!cfg.profilerEnabled() || !cfg.spikeLogs()) {
+        if (!cfg.profilerEnabled() || !cfg.spikeLogs() || panel.free()) {
             removeLogRing();
         } else if (logRing == null) {
             logRing = new LogRing(mask, panel::richSpikes);
@@ -205,7 +212,7 @@ public final class McDiagPlugin extends JavaPlugin {
     /** Каждый источник подключается отдельно: если его нет, остальное работает. */
     private void syncInsight() {
         stopInsight();
-        if (!cfg.profilerEnabled()) {
+        if (!cfg.profilerEnabled() || panel.free()) {
             return;
         }
         try {
@@ -270,7 +277,7 @@ public final class McDiagPlugin extends JavaPlugin {
     }
 
     private void collectMemory() {
-        if (!panel.memory()) {
+        if (!panel.memory() || panel.free()) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -319,6 +326,39 @@ public final class McDiagPlugin extends JavaPlugin {
         return jfr;
     }
 
+    public HeatmapControl heatmap() {
+        return heatmap;
+    }
+
+    /**
+     * Панель сообщила о смене режима. Вызывается из потока отправки, а модули работают с Bukkit,
+     * поэтому переключение идёт в главном потоке.
+     */
+    public void onPanelChanged() {
+        if (isEnabled()) {
+            Bukkit.getScheduler().runTask(this, Safe.task(getLogger(), "mode change", this::applyMode));
+        }
+    }
+
+    private void applyMode() {
+        syncProfiler();
+        syncLogRing();
+        syncInsight();
+        heatmap.sync();
+    }
+
+    /** В бесплатном режиме профилировщика нет совсем: сервер клиента не платит за то, что не показывается. */
+    private void syncProfiler() {
+        boolean want = cfg.profilerEnabled() && !panel.free();
+        if (!want) {
+            stopProfiler();
+        } else if (profiler == null) {
+            Profiler next = new Profiler(this, mainThread, tickMonitor, cfg.profilerIntervalMs(), cfg.spikeIntervalMs(), cfg.profilerAsync());
+            next.start();
+            profiler = next;
+        }
+    }
+
     private void scheduleTasks() {
         syncLogRing();
         syncInsight();
@@ -338,11 +378,8 @@ public final class McDiagPlugin extends JavaPlugin {
         }
 
         tickMonitor.setSpikeThreshold(cfg.spikeThresholdMs());
-        if (cfg.profilerEnabled()) {
-            Profiler next = new Profiler(this, mainThread, tickMonitor, cfg.profilerIntervalMs(), cfg.spikeIntervalMs(), cfg.profilerAsync());
-            next.start();
-            profiler = next;
-        }
+        syncProfiler();
+        heatmap.sync();
     }
 
     private void stopProfiler() {

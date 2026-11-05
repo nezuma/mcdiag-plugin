@@ -1,6 +1,7 @@
 package net.mcdiag.agent.buffer;
 
 import java.util.ArrayDeque;
+import java.util.List;
 
 /**
  * Ограниченный FIFO-буфер готовых JSON-фрагментов.
@@ -22,6 +23,7 @@ public final class TelemetryBuffer {
     public static final int MAX_CHAT = 1000;
     public static final int MAX_CHAT_PER_BATCH = 200;
     public static final int MAX_SPIKES = 20;
+    public static final int MAX_HEAT = 6;
     /** Защита от элемента, который никогда не влезет в батч: такой выбрасывается при чтении. */
     private static final int MAX_ELEMENT_CHARS = 32 * 1024;
 
@@ -34,6 +36,7 @@ public final class TelemetryBuffer {
     private final ArrayDeque<String> chat = new ArrayDeque<>();
     private final ArrayDeque<String> spikes = new ArrayDeque<>();
     private final ArrayDeque<String> memory = new ArrayDeque<>();
+    private final ArrayDeque<String> heat = new ArrayDeque<>();
     /** Список плагинов сервера: важна только последняя версия */
     private String inventory;
     private int maxEvents;
@@ -80,6 +83,38 @@ public final class TelemetryBuffer {
 
     public void addChat(String json) {
         addBounded(chat, MAX_CHAT, json);
+    }
+
+    public void addHeat(String json) {
+        addBounded(heat, MAX_HEAT, json);
+    }
+
+    /** Панель не принимает тепловую карту: копить её незачем. */
+    public void clearHeat() {
+        synchronized (lock) {
+            heat.forEach(line -> chars -= line.length());
+            heat.clear();
+        }
+    }
+
+    /** Бесплатный режим: остаются только метрики. */
+    public void clearAllButMetrics() {
+        synchronized (lock) {
+            for (ArrayDeque<String> queue : List.of(events, profiles, system, results, chat, spikes, memory, heat)) {
+                queue.forEach(line -> chars -= line.length());
+                queue.clear();
+            }
+            if (inventory != null) {
+                chars -= inventory.length();
+                inventory = null;
+            }
+        }
+    }
+
+    public int drainHeat(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(heat, sb, 1, maxChars);
+        }
     }
 
     public void addMemory(String json) {
@@ -208,7 +243,7 @@ public final class TelemetryBuffer {
     public boolean isEmpty() {
         synchronized (lock) {
             return events.isEmpty() && metrics.isEmpty() && profiles.isEmpty() && system.isEmpty()
-                    && results.isEmpty() && chat.isEmpty() && spikes.isEmpty() && memory.isEmpty() && inventory == null;
+                    && results.isEmpty() && chat.isEmpty() && spikes.isEmpty() && memory.isEmpty() && heat.isEmpty() && inventory == null;
         }
     }
 

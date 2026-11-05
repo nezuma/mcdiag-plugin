@@ -31,7 +31,7 @@ public final class PlayerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onJoin(PlayerJoinEvent event) {
-        if (!plugin.cfg().collectJoins()) {
+        if (!plugin.cfg().collectJoins() || plugin.panel().free()) {
             return;
         }
         Player player = event.getPlayer();
@@ -43,7 +43,7 @@ public final class PlayerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
-        if (!plugin.cfg().collectQuits()) {
+        if (!plugin.cfg().collectQuits() || plugin.panel().free()) {
             return;
         }
         Player player = event.getPlayer();
@@ -59,7 +59,7 @@ public final class PlayerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDeath(PlayerDeathEvent event) {
-        if (!plugin.cfg().collectDeaths()) {
+        if (!plugin.cfg().collectDeaths() || plugin.panel().free()) {
             return;
         }
         Player player = event.getEntity();

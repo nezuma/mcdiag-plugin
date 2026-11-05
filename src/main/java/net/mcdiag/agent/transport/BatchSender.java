@@ -30,6 +30,7 @@ public final class BatchSender implements Runnable {
      * передать команды поддержки, даже если метрики выключены.
      */
     private static final long HEARTBEAT_MS = 30 * 1000;
+    private static final long FREE_INTERVAL_MS = 5 * 60 * 1000;
 
     private final McDiagPlugin plugin;
     private final HttpTransport transport;
@@ -76,6 +77,11 @@ public final class BatchSender implements Runnable {
         failures = 0;
     }
 
+    /** Рельеф тепловой карты уходит отдельным запросом через тот же транспорт. */
+    public HttpTransport transport() {
+        return transport;
+    }
+
     public Status status() {
         return new Status(inFlight.get(), pendingItems, sentBatches, lastSuccessAt, lastResult);
     }
@@ -85,6 +91,13 @@ public final class BatchSender implements Runnable {
         long now = System.currentTimeMillis();
         if (!cfg.canSend() || now < nextAttemptAt) {
             return;
+        }
+        // Бесплатный режим: одна точка в 5 минут, остальное не отправляем и не копим.
+        if (plugin.panel().free()) {
+            plugin.buffer().clearAllButMetrics();
+            if (now - lastAttemptAt < FREE_INTERVAL_MS) {
+                return;
+            }
         }
         if (pendingBody != null && now - pendingCreatedAt > PENDING_TTL_MS) {
             plugin.buffer().countDropped(pendingItems);
@@ -107,8 +120,16 @@ public final class BatchSender implements Runnable {
         if (status >= 200 && status < 300) {
             clearPending();
             PanelState panel = plugin.panel();
+            boolean wasFree = panel.free();
+            boolean hadHeatmap = panel.heatmap();
             panel.update(res.body());
             plugin.buffer().clearOptional(!panel.commands(), !panel.richSpikes());
+            if (!panel.heatmap()) {
+                plugin.buffer().clearHeat();
+            }
+            if (wasFree != panel.free() || hadHeatmap != panel.heatmap()) {
+                plugin.onPanelChanged();
+            }
             plugin.remote().accept(RemoteCommandParser.parse(res.body()));
             failures = 0;
             sentBatches++;
@@ -181,6 +202,7 @@ public final class BatchSender implements Runnable {
         items += optional(sb, "profile", budget, buffer::drainProfiles);
         items += optional(sb, "system", budget, buffer::drainSystem);
         items += optional(sb, "memory", budget, buffer::drainMemory);
+        items += optional(sb, "heat", budget, buffer::drainHeat);
         String inventory = budget[0] > 512 ? buffer.takeInventory(budget[0] - 32) : null;
         if (inventory != null) {
             sb.append(",\"inventory\":").append(inventory);

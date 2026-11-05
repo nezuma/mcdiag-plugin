@@ -7,7 +7,7 @@ website: https://github.com/nezuma/mcdiag-plugin
 commands:
   diag:
     description: MCDiag agent status and control
-    usage: /diag <status|plugins|spikes|token|reload>
+    usage: /diag <status|plugins|spikes|token|reload|pos1|pos2|poi|heatmap>
     permission: mcdiag.admin
 permissions:
   mcdiag.admin:
