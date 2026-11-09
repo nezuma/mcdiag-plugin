@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
 public final class PanelState {
 
     private static final Pattern CAPS = Pattern.compile("\"caps\":\\[([^\\]]*)\\]");
-    private static final Pattern CHATLOG = Pattern.compile("\"chatlog\":\\{(?:\"chat\":(?:true|false),)?\"cmd\":(true|false)\\}");
+    private static final Pattern CHATLOG = Pattern.compile("\"chatlog\":\\{(?:\"chat\":(true|false),)?\"cmd\":(true|false)\\}");
 
     private static final Pattern TIER = Pattern.compile("\"tier\":\"(full|free|frozen)\"");
 
@@ -20,6 +20,11 @@ public final class PanelState {
     private volatile boolean heatmap;
     private volatile boolean free;
     private volatile boolean commands;
+    private volatile boolean chat;
+    private volatile boolean nicks;
+    private volatile boolean joins;
+    private volatile boolean chunkgen;
+    private volatile boolean economy;
 
     /** Успешный ответ панели. Нет {@code caps} — панель старая, работаем в прежнем формате. */
     public void update(String body) {
@@ -34,9 +39,15 @@ public final class PanelState {
         insight = list.contains("\"insight\"");
         memory = list.contains("\"memory\"");
         heatmap = list.contains("\"heatmap\"");
+        nicks = list.contains("\"nicks\"");
+        joins = list.contains("\"joins\"");
+        chunkgen = list.contains("\"chunkgen\"");
+        economy = list.contains("\"economy\"");
         Matcher tier = TIER.matcher(body);
         free = tier.find() && !tier.group(1).equals("full");
-        commands = found && log.group(1).equals("true");
+        commands = found && log.group(2).equals("true");
+        // Чат принимает только панель 0.7.0+: прежние присылают chat:false.
+        chat = found && "true".equals(log.group(1));
     }
 
     /** Панель отклонила батч (400): возвращаемся к прежнему формату до следующего ответа. */
@@ -47,6 +58,11 @@ public final class PanelState {
         heatmap = false;
         free = false;
         commands = false;
+        chat = false;
+        nicks = false;
+        joins = false;
+        chunkgen = false;
+        economy = false;
     }
 
     /** Панель принимает тепловую карту. */
@@ -75,5 +91,30 @@ public final class PanelState {
 
     public boolean commands() {
         return commands;
+    }
+
+    /** Владелец включил на сайте запись чата. */
+    public boolean chat() {
+        return chat;
+    }
+
+    /** Панель принимает ник игрока в событиях входа, выхода и смерти. */
+    public boolean nicks() {
+        return nicks;
+    }
+
+    /** Панель принимает IP и адрес подключения при входе. */
+    public boolean joins() {
+        return joins;
+    }
+
+    /** Панель принимает счётчик новых чанков (поле {@code chunkgen}). */
+    public boolean chunkgen() {
+        return chunkgen;
+    }
+
+    /** Панель принимает балансы игроков (поле {@code economy}). */
+    public boolean economy() {
+        return economy;
     }
 }

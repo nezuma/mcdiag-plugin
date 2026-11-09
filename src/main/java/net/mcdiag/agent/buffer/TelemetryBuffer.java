@@ -24,6 +24,11 @@ public final class TelemetryBuffer {
     public static final int MAX_CHAT_PER_BATCH = 200;
     public static final int MAX_SPIKES = 20;
     public static final int MAX_HEAT = 6;
+    /** Минутные срезы генерации чанков: панель принимает ≤ 10 за батч */
+    public static final int MAX_CHUNKGEN = 30;
+    /** Порции балансов (≤ 100 игроков в каждой): хватает на 4 прохода по двум валютам */
+    public static final int MAX_ECONOMY = 24;
+    public static final int MAX_ECONOMY_PER_BATCH = 4;
     /** Защита от элемента, который никогда не влезет в батч: такой выбрасывается при чтении. */
     private static final int MAX_ELEMENT_CHARS = 32 * 1024;
 
@@ -37,6 +42,8 @@ public final class TelemetryBuffer {
     private final ArrayDeque<String> spikes = new ArrayDeque<>();
     private final ArrayDeque<String> memory = new ArrayDeque<>();
     private final ArrayDeque<String> heat = new ArrayDeque<>();
+    private final ArrayDeque<String> chunkgen = new ArrayDeque<>();
+    private final ArrayDeque<String> economy = new ArrayDeque<>();
     /** Список плагинов сервера: важна только последняя версия */
     private String inventory;
     private int maxEvents;
@@ -85,6 +92,40 @@ public final class TelemetryBuffer {
         addBounded(chat, MAX_CHAT, json);
     }
 
+    public void addChunkGen(String json) {
+        addBounded(chunkgen, MAX_CHUNKGEN, json);
+    }
+
+    public void addEconomy(String json) {
+        addBounded(economy, MAX_ECONOMY, json);
+    }
+
+    public int drainChunkGen(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(chunkgen, sb, MAX_SYSTEM, maxChars);
+        }
+    }
+
+    public int drainEconomy(StringBuilder sb, int maxChars) {
+        synchronized (lock) {
+            return drain(economy, sb, MAX_ECONOMY_PER_BATCH, maxChars);
+        }
+    }
+
+    /** Панель перестала принимать генерацию чанков или экономику: копить незачем. */
+    public void clearModules(boolean clearChunkGen, boolean clearEconomy) {
+        synchronized (lock) {
+            if (clearChunkGen) {
+                chunkgen.forEach(line -> chars -= line.length());
+                chunkgen.clear();
+            }
+            if (clearEconomy) {
+                economy.forEach(line -> chars -= line.length());
+                economy.clear();
+            }
+        }
+    }
+
     public void addHeat(String json) {
         addBounded(heat, MAX_HEAT, json);
     }
@@ -100,7 +141,7 @@ public final class TelemetryBuffer {
     /** Бесплатный режим: остаются только метрики. */
     public void clearAllButMetrics() {
         synchronized (lock) {
-            for (ArrayDeque<String> queue : List.of(events, profiles, system, results, chat, spikes, memory, heat)) {
+            for (ArrayDeque<String> queue : List.of(events, profiles, system, results, chat, spikes, memory, heat, chunkgen, economy)) {
                 queue.forEach(line -> chars -= line.length());
                 queue.clear();
             }
@@ -243,7 +284,7 @@ public final class TelemetryBuffer {
     public boolean isEmpty() {
         synchronized (lock) {
             return events.isEmpty() && metrics.isEmpty() && profiles.isEmpty() && system.isEmpty()
-                    && results.isEmpty() && chat.isEmpty() && spikes.isEmpty() && memory.isEmpty() && heat.isEmpty() && inventory == null;
+                    && results.isEmpty() && chat.isEmpty() && spikes.isEmpty() && memory.isEmpty() && heat.isEmpty() && chunkgen.isEmpty() && economy.isEmpty() && inventory == null;
         }
     }
 

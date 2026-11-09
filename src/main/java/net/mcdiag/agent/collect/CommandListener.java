@@ -15,7 +15,7 @@ import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 
 /**
  * Журнал команд игроков. Работает, только если владелец включил его на сайте; иначе обработчик
- * сразу выходит. Чат, консоль и командные блоки не записываются.
+ * сразу выходит. Чат пишет {@link ChatListener}, консоль и командные блоки не записываются.
  */
 public final class CommandListener implements Listener {
 
@@ -49,6 +49,11 @@ public final class CommandListener implements Listener {
 
     /** Элемент поля {@code chatlog} батча. */
     static String line(long ts, String kind, String nick, String world, String text, String owner) {
+        return line(ts, kind, nick, world, text, owner, false);
+    }
+
+    /** @param blocked сообщение отменил другой плагин (мут, фильтр): его никто не увидел */
+    static String line(long ts, String kind, String nick, String world, String text, String owner, boolean blocked) {
         StringBuilder sb = new StringBuilder(128).append("{\"ts\":").append(ts).append(",\"k\":\"").append(kind).append('"');
         String safeNick = safeNick(nick);
         if (safeNick != null) {
@@ -61,29 +66,15 @@ public final class CommandListener implements Listener {
         if (world != null && !world.isEmpty()) {
             Json.str(sb.append(",\"w\":"), world, MAX_WORLD);
         }
+        if (blocked) {
+            sb.append(",\"x\":true");
+        }
         return sb.append('}').toString();
     }
 
     /** Ник под шаблон панели: непонятный символ не должен стоить всего батча. */
     static String safeNick(String nick) {
-        if (nick == null) {
-            return null;
-        }
-        StringBuilder clean = null;
-        for (int i = 0; i < nick.length(); i++) {
-            char c = nick.charAt(i);
-            boolean ok = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
-                    || c == '_' || c == '.' || c == '*' || c == '-';
-            if (!ok && clean == null) {
-                clean = new StringBuilder(nick.length()).append(nick, 0, i);
-            } else if (ok && clean != null) {
-                clean.append(c);
-            }
-        }
-        if (clean == null) {
-            return nick.isEmpty() ? "unknown" : nick;
-        }
-        return clean.length() == 0 ? "unknown" : clean.toString();
+        return Nicks.safe(nick);
     }
 
     /** Какой плагин обрабатывает команду: по нему панель связывает команду со спайком. */

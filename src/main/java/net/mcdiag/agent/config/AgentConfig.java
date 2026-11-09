@@ -36,6 +36,10 @@ public record AgentConfig(
         boolean jfrInsight,
         boolean chatLogAllowed,
         List<String> hiddenCommands,
+        boolean collectChunks,
+        boolean collectJoinSource,
+        boolean economyEnabled,
+        boolean economyOffline,
         String problem) {
 
     /** Формат токена из openapi: {@code mcd_<serverId>_<uuid>}. */
@@ -88,6 +92,10 @@ public record AgentConfig(
                 // Журнал включает владелец на сайте; здесь можно запретить его совсем.
                 c.getBoolean("chat_log.allowed", true),
                 List.copyOf(c.getStringList("chat_log.hidden_commands")),
+                flag(collect, "chunks"),
+                flag(collect, "join_source"),
+                c.getBoolean("economy.enabled", true),
+                c.getBoolean("economy.offline_players", false),
                 problem);
     }
 

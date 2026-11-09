@@ -122,12 +122,15 @@ public final class BatchSender implements Runnable {
             PanelState panel = plugin.panel();
             boolean wasFree = panel.free();
             boolean hadHeatmap = panel.heatmap();
+            boolean hadEconomy = panel.economy();
             panel.update(res.body());
-            plugin.buffer().clearOptional(!panel.commands(), !panel.richSpikes());
+            // Команды и чат лежат в одной очереди: чистим, только если выключено и то и другое.
+            plugin.buffer().clearOptional(!panel.commands() && !panel.chat(), !panel.richSpikes());
+            plugin.buffer().clearModules(!panel.chunkgen(), !panel.economy());
             if (!panel.heatmap()) {
                 plugin.buffer().clearHeat();
             }
-            if (wasFree != panel.free() || hadHeatmap != panel.heatmap()) {
+            if (wasFree != panel.free() || hadHeatmap != panel.heatmap() || hadEconomy != panel.economy()) {
                 plugin.onPanelChanged();
             }
             plugin.remote().accept(RemoteCommandParser.parse(res.body()));
@@ -150,6 +153,7 @@ public final class BatchSender implements Runnable {
             // Панель не приняла формат — откатываемся к старому, чтобы не терять и остальные данные.
             plugin.panel().reset();
             plugin.buffer().clearOptional(true, true);
+            plugin.buffer().clearModules(true, true);
             report(status, "batch dropped " + status + code(res), true);
         } else {
             backoff(cfg, now);
@@ -203,6 +207,8 @@ public final class BatchSender implements Runnable {
         items += optional(sb, "system", budget, buffer::drainSystem);
         items += optional(sb, "memory", budget, buffer::drainMemory);
         items += optional(sb, "heat", budget, buffer::drainHeat);
+        items += optional(sb, "chunkgen", budget, buffer::drainChunkGen);
+        items += optional(sb, "economy", budget, buffer::drainEconomy);
         String inventory = budget[0] > 512 ? buffer.takeInventory(budget[0] - 32) : null;
         if (inventory != null) {
             sb.append(",\"inventory\":").append(inventory);

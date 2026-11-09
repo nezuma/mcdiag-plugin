@@ -2,6 +2,8 @@ name: MCDiag
 version: '${version}'
 main: net.mcdiag.agent.McDiagPlugin
 api-version: '1.19'
+# Только порядок загрузки: экономика читается через reflection, без этих плагинов всё работает.
+softdepend: [Vault, PlayerPoints]
 description: Lightweight telemetry agent for MCDiag
 website: https://github.com/nezuma/mcdiag-plugin
 commands:

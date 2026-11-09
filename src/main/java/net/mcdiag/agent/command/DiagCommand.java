@@ -95,6 +95,9 @@ public final class DiagCommand implements TabExecutor {
                     + ", " + p.cachedClasses() + " classes cached"
                     + (plugin.jfr() != null && plugin.jfr().active() ? ", JFR on" : ", JFR off"));
         }
+        sender.sendMessage(" Chat log: " + (plugin.chatEnabled() ? "chat on" : "chat off")
+                + (plugin.commandsEnabled() ? ", commands on" : ", commands off"));
+        sender.sendMessage(" Economy: " + plugin.economyStatus());
         if (plugin.panel().free()) {
             sender.sendMessage(" Mode: free. Only basic metrics are sent, once per 5 minutes.");
         }

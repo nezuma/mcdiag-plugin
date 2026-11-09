@@ -67,4 +67,26 @@ class PanelStateTest {
         panel.update("{\"data\":{\"duplicate\":false}}");
         assertFalse(panel.free());
     }
+
+    @Test
+    void newModulesAndChatFollowThePanel() {
+        PanelState panel = new PanelState();
+        panel.update("{\"data\":{\"tier\":\"full\",\"caps\":[\"spikes\",\"chatlog\"],\"chatlog\":{\"chat\":true,\"cmd\":false}}}");
+        assertTrue(panel.chat());
+        assertFalse(panel.commands());
+        assertFalse(panel.nicks());
+        assertFalse(panel.economy());
+
+        panel.update("{\"data\":{\"tier\":\"full\",\"caps\":[\"chatlog\",\"nicks\",\"joins\",\"chunkgen\",\"economy\"],\"chatlog\":{\"chat\":false,\"cmd\":true}}}");
+        assertFalse(panel.chat());
+        assertTrue(panel.commands());
+        assertTrue(panel.nicks());
+        assertTrue(panel.joins());
+        assertTrue(panel.chunkgen());
+        assertTrue(panel.economy());
+
+        panel.reset();
+        assertFalse(panel.economy());
+        assertFalse(panel.joins());
+    }
 }

@@ -1,6 +1,7 @@
 package net.mcdiag.agent.transport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -87,5 +88,19 @@ class BatchSenderTest {
         StringBuilder sb = new StringBuilder();
         assertEquals(0, BatchSender.assemble(sb, new TelemetryBuffer(10), 100, UUID.randomUUID(), 1, PLUGIN));
         assertTrue(sb.toString().endsWith(",\"events\":[],\"metrics\":[]}"), sb.toString());
+    }
+
+    @Test
+    void chunkGenerationAndEconomyAreOptionalSections() {
+        TelemetryBuffer buffer = new TelemetryBuffer(10);
+        StringBuilder sb = new StringBuilder();
+        BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), 1, PLUGIN);
+        assertFalse(sb.toString().contains("chunkgen"));
+        buffer.addChunkGen("{\"ts\":60000,\"w\":[{\"n\":\"world\",\"c\":3}]}");
+        buffer.addEconomy("{\"ts\":300000,\"c\":\"vault\",\"name\":\"E\",\"b\":[]}");
+        assertEquals(2, BatchSender.assemble(sb, buffer, 100, UUID.randomUUID(), 1, PLUGIN));
+        assertTrue(sb.toString().contains(",\"chunkgen\":[{\"ts\":60000"));
+        assertTrue(sb.toString().contains(",\"economy\":[{\"ts\":300000"));
+        assertTrue(buffer.isEmpty());
     }
 }

@@ -3,6 +3,8 @@ package net.mcdiag.agent;
 import java.util.Locale;
 import java.util.logging.Logger;
 import net.mcdiag.agent.buffer.TelemetryBuffer;
+import net.mcdiag.agent.collect.ChatListener;
+import net.mcdiag.agent.collect.ChunkGenCounter;
 import net.mcdiag.agent.collect.CommandListener;
 import net.mcdiag.agent.collect.ErrorCaptureHandler;
 import net.mcdiag.agent.collect.LogRing;
@@ -12,6 +14,7 @@ import net.mcdiag.agent.collect.SystemStats;
 import net.mcdiag.agent.collect.TextMask;
 import net.mcdiag.agent.command.DiagCommand;
 import net.mcdiag.agent.config.AgentConfig;
+import net.mcdiag.agent.economy.EconomyModule;
 import net.mcdiag.agent.heatmap.HeatmapControl;
 import net.mcdiag.agent.insight.GcWatch;
 import net.mcdiag.agent.insight.JfrInsight;
@@ -57,6 +60,8 @@ public final class McDiagPlugin extends JavaPlugin {
     private volatile JfrInsight jfr;
     private MemoryStats memory;
     private HeatmapControl heatmap;
+    private ChunkGenCounter chunkGen;
+    private EconomyModule economy;
 
     @Override
     public void onEnable() {
@@ -80,6 +85,14 @@ public final class McDiagPlugin extends JavaPlugin {
         errorHandler = new ErrorCaptureHandler(this);
         Logger.getLogger("").addHandler(errorHandler);
         getServer().getPluginManager().registerEvents(new CommandListener(this), this);
+        chunkGen = new ChunkGenCounter(this);
+        getServer().getPluginManager().registerEvents(chunkGen, this);
+        try {
+            getServer().getPluginManager().registerEvents(new ChatListener(this), this);
+        } catch (LinkageError e) {
+            // Ядро без событий чата Paper: журнал чата недоступен, остальное работает.
+            getLogger().info("Chat log is unavailable on this server core");
+        }
 
         PluginCommand command = getCommand("diag");
         if (command != null) {
@@ -97,6 +110,7 @@ public final class McDiagPlugin extends JavaPlugin {
         if (heatmap != null) {
             heatmap.stop();
         }
+        stopEconomy();
         Bukkit.getScheduler().cancelTasks(this);
         stopProfiler();
         if (remote != null) {
@@ -118,6 +132,7 @@ public final class McDiagPlugin extends JavaPlugin {
         buffer.resize(cfg.maxBufferSize());
         sender.resetBackoff();
         heatmap.stop();
+        stopEconomy();
         Bukkit.getScheduler().cancelTasks(this);
         stopProfiler();
         scheduleTasks();
@@ -151,6 +166,23 @@ public final class McDiagPlugin extends JavaPlugin {
 
     public LogRing logRing() {
         return logRing;
+    }
+
+    /** Чат пишем, только если разрешено и в config.yml, и владельцем на сайте. */
+    public boolean chatEnabled() {
+        return cfg.chatLogAllowed() && panel.chat() && !panel.free();
+    }
+
+    /** Для /diag status. */
+    public String economyStatus() {
+        EconomyModule current = economy;
+        if (!cfg.economyEnabled()) {
+            return "off (economy.enabled in config.yml)";
+        }
+        if (current == null) {
+            return panel.free() ? "off in free mode" : panel.economy() ? "starting" : "waiting for the panel";
+        }
+        return current.describe();
     }
 
     /** Команды пишем, только если разрешено и в config.yml, и владельцем на сайте. */
@@ -345,6 +377,37 @@ public final class McDiagPlugin extends JavaPlugin {
         syncLogRing();
         syncInsight();
         heatmap.sync();
+        syncEconomy();
+    }
+
+    private void syncEconomy() {
+        boolean want = cfg.economyEnabled() && panel.economy() && !panel.free();
+        if (!want) {
+            stopEconomy();
+        } else if (economy == null) {
+            EconomyModule next = new EconomyModule(this, cfg.economyOffline());
+            next.start();
+            economy = next;
+        }
+    }
+
+    private void stopEconomy() {
+        EconomyModule current = economy;
+        economy = null;
+        if (current != null) {
+            current.stop();
+        }
+    }
+
+    private void collectChunkGen() {
+        if (!panel.chunkgen() || panel.free() || !cfg.collectChunks()) {
+            chunkGen.clear();
+            return;
+        }
+        String json = chunkGen.drainMinute(System.currentTimeMillis() / 60_000 * 60_000 - 60_000);
+        if (json != null) {
+            buffer.addChunkGen(json);
+        }
     }
 
     /** В бесплатном режиме профилировщика нет совсем: сервер клиента не платит за то, что не показывается. */
@@ -376,10 +439,12 @@ public final class McDiagPlugin extends JavaPlugin {
             scheduler.runTaskTimerAsynchronously(this, Safe.task(log, "system stats", system), 60 * TICKS_PER_SEC, 60 * TICKS_PER_SEC);
             scheduler.runTaskTimerAsynchronously(this, Safe.task(log, "memory stats", this::collectMemory), 60 * TICKS_PER_SEC, 60 * TICKS_PER_SEC);
         }
+        scheduler.runTaskTimerAsynchronously(this, Safe.task(log, "chunk generation", this::collectChunkGen), 60 * TICKS_PER_SEC, 60 * TICKS_PER_SEC);
 
         tickMonitor.setSpikeThreshold(cfg.spikeThresholdMs());
         syncProfiler();
         heatmap.sync();
+        syncEconomy();
     }
 
     private void stopProfiler() {
