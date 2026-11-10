@@ -162,6 +162,15 @@ public final class McDiagPlugin extends JavaPlugin {
         }
         if (netTap != null) {
             netTap.setOwners(registry::pluginOfClass, NetworkModule.threadOwner());
+            // Загрузчик класса указывает на плагин точнее индекса: так видны и затенённые библиотеки.
+            netTap.setLoaderOwner(type -> {
+                try {
+                    org.bukkit.plugin.Plugin owner = JavaPlugin.getProvidingPlugin(type);
+                    return owner == this ? null : owner.getName();
+                } catch (RuntimeException e) {
+                    return null;
+                }
+            });
             registry.registerBuiltin(new NetworkModule(netTap, netAggregator, registry));
         }
         PrivilegesModule privileges = new PrivilegesModule(registry, () -> mask);
@@ -507,7 +516,7 @@ public final class McDiagPlugin extends JavaPlugin {
         if (netTap != null && !registry.isActive(NetworkModule.ID)
                 && (panel.answered() || !registry.enabledInConfig(NetworkModule.ID))) {
             netTap.setSink(null);
-            netAggregator.drain();
+            netAggregator.clear();
         }
     }
 

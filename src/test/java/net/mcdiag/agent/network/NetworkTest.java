@@ -28,6 +28,19 @@ class NetworkTest {
     }
 
     @Test
+    void socketOfAnotherThreadsHttpRequestIsNotADuplicate() {
+        NetAggregator agg = new NetAggregator();
+        // HTTP потока 7, между ним и его сокетом — запрос потока 9.
+        agg.record(1, "Shop", "https", "a.dev", 443, false, 0, 7);
+        agg.record(2, "Evil", "https", "b.dev", 443, false, 0, 9);
+        agg.record(3, "Shop", "socket", "a.dev", 443, false, 0, 7);
+        agg.record(4, "Evil", "socket", "b.dev", 443, false, 0, 9);
+        String all = String.join("", agg.drain());
+        assertTrue(all.contains("\"s\":[\"https\"],\"c\":1"), all);
+        assertFalse(all.contains("socket"), all);
+    }
+
+    @Test
     void detectsWebhooksWithoutKeepingThePath() {
         assertEquals(NetAggregator.KIND_DISCORD_WEBHOOK, NetAggregator.kindsOf("discord.com", "/api/webhooks/123/secret"));
         assertEquals(NetAggregator.KIND_DISCORD_WEBHOOK, NetAggregator.kindsOf("ptb.discord.com", "/api/v10/webhooks/1/x"));

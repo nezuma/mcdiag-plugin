@@ -1,5 +1,6 @@
 package net.mcdiag.agent.network;
 
+import java.util.List;
 import java.util.Set;
 import net.mcdiag.agent.module.Channel;
 import net.mcdiag.agent.module.ModuleRegistry;
@@ -19,6 +20,8 @@ public final class NetworkModule implements AgentModule {
     private final ModuleRegistry registry;
     private final NetAggregator aggregator;
     private volatile Channel channel;
+    private volatile Channel requests;
+    private volatile ModuleContext ctx;
 
     /** @param aggregator копит соединения с запуска сервера, ещё до ответа панели */
     public NetworkModule(NetTap tap, NetAggregator aggregator, ModuleRegistry registry) {
@@ -45,6 +48,14 @@ public final class NetworkModule implements AgentModule {
     @Override
     public void enable(ModuleContext ctx) {
         channel = registry.channel("net", "net", 512, 256);
+        // Пути, параметры и место вызова — отдельный раздел: панель 0.8 его не знает.
+        requests = registry.channel("netreq", "netreq", 512, 128);
+        this.ctx = ctx;
+        Set<String> extra = new java.util.HashSet<>();
+        for (String name : ctx.config().getStringList("mask_params")) {
+            extra.add(name.toLowerCase(java.util.Locale.ROOT).trim());
+        }
+        tap.setPathCapture(ctx.config().getBoolean("paths", true), Set.copyOf(extra));
         tap.setOwners(registry::pluginOfClass, threadOwner());
         tap.setSink(aggregator);
         ctx.repeat(this::drain, DRAIN_TICKS, DRAIN_TICKS, true);
@@ -53,10 +64,12 @@ public final class NetworkModule implements AgentModule {
     @Override
     public void disable() {
         tap.setSink(null);
-        aggregator.drain();
-        Channel current = channel;
-        if (current != null) {
-            current.clear();
+        aggregator.clear();
+        ctx = null;
+        for (Channel current : new Channel[] {channel, requests}) {
+            if (current != null) {
+                current.clear();
+            }
         }
     }
 
@@ -72,6 +85,14 @@ public final class NetworkModule implements AgentModule {
         }
         for (String json : aggregator.drain()) {
             current.offer(json);
+        }
+        Channel details = requests;
+        ModuleContext context = ctx;
+        List<String> found = aggregator.drainRequests();
+        if (details != null && context != null && context.panelSupports("netreq")) {
+            for (String json : found) {
+                details.offer(json);
+            }
         }
     }
 
