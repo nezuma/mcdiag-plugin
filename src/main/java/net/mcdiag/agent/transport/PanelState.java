@@ -1,5 +1,7 @@
 package net.mcdiag.agent.transport;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -14,6 +16,10 @@ public final class PanelState {
 
     private static final Pattern TIER = Pattern.compile("\"tier\":\"(full|free|frozen)\"");
 
+    private static final Pattern CAP_ITEM = Pattern.compile("\"([a-z0-9_-]{1,32})\"");
+
+    private volatile Set<String> caps = Set.of();
+    private volatile boolean answered;
     private volatile boolean richSpikes;
     private volatile boolean insight;
     private volatile boolean memory;
@@ -33,6 +39,13 @@ public final class PanelState {
         }
         Matcher caps = CAPS.matcher(body);
         String list = caps.find() ? caps.group(1) : "";
+        Set<String> parsed = new HashSet<>();
+        Matcher item = CAP_ITEM.matcher(list);
+        while (item.find()) {
+            parsed.add(item.group(1));
+        }
+        this.caps = Set.copyOf(parsed);
+        answered = true;
         richSpikes = list.contains("\"spikes\"");
         Matcher log = CHATLOG.matcher(body);
         boolean found = list.contains("\"chatlog\"") && log.find();
@@ -52,6 +65,7 @@ public final class PanelState {
 
     /** Панель отклонила батч (400): возвращаемся к прежнему формату до следующего ответа. */
     public void reset() {
+        caps = Set.of();
         richSpikes = false;
         insight = false;
         memory = false;
@@ -63,6 +77,20 @@ public final class PanelState {
         joins = false;
         chunkgen = false;
         economy = false;
+    }
+
+    /** Объявила ли панель возможность в последнем ответе: по ней включаются модули. */
+    public boolean has(String cap) {
+        return caps.contains(cap);
+    }
+
+    /** Был хотя бы один успешный ответ: до него набор возможностей ещё неизвестен. */
+    public boolean answered() {
+        return answered;
+    }
+
+    public Set<String> caps() {
+        return caps;
     }
 
     /** Панель принимает тепловую карту. */

@@ -20,6 +20,15 @@ import net.mcdiag.agent.insight.GcWatch;
 import net.mcdiag.agent.insight.JfrInsight;
 import net.mcdiag.agent.insight.MemoryStats;
 import net.mcdiag.agent.json.Json;
+import net.mcdiag.agent.logs.LogAggregator;
+import net.mcdiag.agent.logs.LogCapture;
+import net.mcdiag.agent.logs.LogTaps;
+import net.mcdiag.agent.logs.LogsModule;
+import net.mcdiag.agent.module.ModuleRegistry;
+import net.mcdiag.agent.network.NetAggregator;
+import net.mcdiag.agent.network.NetTap;
+import net.mcdiag.agent.network.NetworkModule;
+import net.mcdiag.agent.privileges.PrivilegesModule;
 import net.mcdiag.agent.profiler.AsyncTracker;
 import net.mcdiag.agent.profiler.PluginLookup;
 import net.mcdiag.agent.profiler.Profiler;
@@ -30,8 +39,10 @@ import net.mcdiag.agent.transport.HttpTransport;
 import net.mcdiag.agent.transport.PanelState;
 import net.mcdiag.agent.util.Safe;
 import net.mcdiag.agent.util.UuidHasher;
+import net.mcdiag.api.McDiagApi;
 import org.bukkit.Bukkit;
 import org.bukkit.command.PluginCommand;
+import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitScheduler;
 
@@ -62,6 +73,53 @@ public final class McDiagPlugin extends JavaPlugin {
     private HeatmapControl heatmap;
     private ChunkGenCounter chunkGen;
     private EconomyModule economy;
+    private volatile ModuleRegistry modules;
+    private LogCapture logCapture;
+    private LogTaps.Tap logTap;
+    private NetTap netTap;
+    private NetAggregator netAggregator;
+    private PrivilegesModule privileges;
+
+    /**
+     * Перехват лога и сети ставится до включения других плагинов: так видны ошибки их запуска,
+     * а HttpClient, созданные при их включении, уже идут через наш ProxySelector.
+     */
+    @Override
+    public void onLoad() {
+        saveDefaultConfig();
+        long mainId = Thread.currentThread().getId();
+        if (getConfig().getBoolean("modules.logs.enabled", true)) {
+            try {
+                LogAggregator aggregator = new LogAggregator(
+                        cls -> { ModuleRegistry r = modules; return r == null ? null : r.pluginOfClass(cls); },
+                        McDiagPlugin::isPluginName,
+                        text -> { TextMask m = mask; return m == null ? text : m.text(text); });
+                logCapture = new LogCapture(aggregator, getName(), mainId);
+                logTap = LogTaps.install(logCapture, Bukkit.getServer().getClass().getClassLoader(), getLogger());
+            } catch (RuntimeException | LinkageError e) {
+                getLogger().log(java.util.logging.Level.WARNING, "Log capture is unavailable: " + e);
+                logCapture = null;
+            }
+        }
+        if (getConfig().getBoolean("modules.network.enabled", true)) {
+            try {
+                netTap = NetTap.install(mainId);
+                // Копим с самого начала: до ответа панели модуль ещё не включён.
+                netAggregator = new NetAggregator();
+                netTap.setSink(netAggregator);
+            } catch (RuntimeException | LinkageError e) {
+                getLogger().log(java.util.logging.Level.WARNING, "Network audit is unavailable: " + e);
+            }
+        }
+    }
+
+    private static boolean isPluginName(String name) {
+        try {
+            return name != null && !name.isEmpty() && Bukkit.getPluginManager().getPlugin(name) != null;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
 
     @Override
     public void onEnable() {
@@ -94,6 +152,29 @@ public final class McDiagPlugin extends JavaPlugin {
             getLogger().info("Chat log is unavailable on this server core");
         }
 
+        ModuleRegistry registry = new ModuleRegistry(this);
+        modules = registry;
+        registry.buildLookupNow();
+        if (logCapture != null) {
+            registry.registerBuiltin(new LogsModule(logCapture, logTap, registry));
+            // Сообщения из API принимаются сразу; журнал решает, копить ли их, как и строки лога.
+            registry.setIssueSink(logCapture::issue);
+        }
+        if (netTap != null) {
+            netTap.setOwners(registry::pluginOfClass, NetworkModule.threadOwner());
+            registry.registerBuiltin(new NetworkModule(netTap, netAggregator, registry));
+        }
+        PrivilegesModule privileges = new PrivilegesModule(registry, () -> mask);
+        this.privileges = privileges;
+        registry.registerBuiltin(privileges);
+        if (registry.enabledInConfig(PrivilegesModule.ID)) {
+            privileges.startEarly(this, getConfig().getStringList("modules.privileges.dangerous_permissions"));
+        }
+        getServer().getPluginManager().registerEvents(registry, this);
+        getServer().getServicesManager().register(McDiagApi.class, registry, this, ServicePriority.Normal);
+        // Плагины, догруженные после старта, попадут в индекс при обновлении в фоне.
+        Bukkit.getScheduler().runTaskLater(this, registry::rebuildLookup, 20 * 60);
+
         PluginCommand command = getCommand("diag");
         if (command != null) {
             DiagCommand diag = new DiagCommand(this);
@@ -107,6 +188,19 @@ public final class McDiagPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        ModuleRegistry registry = modules;
+        if (registry != null) {
+            registry.stopAll();
+            getServer().getServicesManager().unregisterAll(this);
+        }
+        if (logTap != null) {
+            logTap.uninstall();
+            logTap = null;
+        }
+        if (netTap != null) {
+            netTap.uninstall();
+            netTap = null;
+        }
         if (heatmap != null) {
             heatmap.stop();
         }
@@ -133,6 +227,9 @@ public final class McDiagPlugin extends JavaPlugin {
         sender.resetBackoff();
         heatmap.stop();
         stopEconomy();
+        // Задачи модулей отменятся вместе со всеми: модули выключаем заранее и включаем заново.
+        modules.stopAll();
+        modules.resetFailures();
         Bukkit.getScheduler().cancelTasks(this);
         stopProfiler();
         scheduleTasks();
@@ -162,6 +259,10 @@ public final class McDiagPlugin extends JavaPlugin {
 
     public TextMask mask() {
         return mask;
+    }
+
+    public ModuleRegistry modules() {
+        return modules;
     }
 
     public LogRing logRing() {
@@ -229,13 +330,21 @@ public final class McDiagPlugin extends JavaPlugin {
             removeLogRing();
         } else if (logRing == null) {
             logRing = new LogRing(mask, panel::richSpikes);
-            Logger.getLogger("").addHandler(logRing);
+            // Перехват Log4j видит намного больше строк, чем корневой JUL Logger.
+            if (logCapture != null && "log4j".equals(logCapture.source())) {
+                logCapture.setRing(logRing);
+            } else {
+                Logger.getLogger("").addHandler(logRing);
+            }
         }
     }
 
     private void removeLogRing() {
         LogRing ring = logRing;
         logRing = null;
+        if (logCapture != null) {
+            logCapture.setRing(null);
+        }
         if (ring != null) {
             Logger.getLogger("").removeHandler(ring);
         }
@@ -378,6 +487,28 @@ public final class McDiagPlugin extends JavaPlugin {
         syncInsight();
         heatmap.sync();
         syncEconomy();
+        syncModules();
+    }
+
+    /** Модули по тарифу и возможностям панели; до первого ответа панели журнал лога копит ошибки запуска. */
+    private void syncModules() {
+        ModuleRegistry registry = modules;
+        if (registry == null) {
+            return;
+        }
+        registry.sync();
+        if (logCapture != null && !registry.isActive(LogsModule.ID)) {
+            logCapture.setAccepting(!panel.answered() && registry.enabledInConfig(LogsModule.ID));
+        }
+        if (privileges != null && !registry.isActive(PrivilegesModule.ID)
+                && (panel.answered() || !registry.enabledInConfig(PrivilegesModule.ID))) {
+            privileges.stop();
+        }
+        if (netTap != null && !registry.isActive(NetworkModule.ID)
+                && (panel.answered() || !registry.enabledInConfig(NetworkModule.ID))) {
+            netTap.setSink(null);
+            netAggregator.drain();
+        }
     }
 
     private void syncEconomy() {
@@ -445,6 +576,7 @@ public final class McDiagPlugin extends JavaPlugin {
         syncProfiler();
         heatmap.sync();
         syncEconomy();
+        syncModules();
     }
 
     private void stopProfiler() {

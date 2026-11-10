@@ -42,7 +42,7 @@ public final class ErrorCaptureHandler extends Handler {
     public void publish(LogRecord record) {
         if (record == null || record.getThrown() == null
                 || record.getLevel().intValue() < Level.SEVERE.intValue()
-                || !plugin.cfg().collectErrors() || plugin.panel().free()) {
+                || !plugin.cfg().collectErrors() || plugin.panel().free() || plugin.panel().has("logs")) {
             return;
         }
         if (!acquire(plugin.cfg().maxErrorsPerMinute())) {
@@ -82,8 +82,14 @@ public final class ErrorCaptureHandler extends Handler {
         if (!generic) {
             return logger;
         }
+        String plugin = pluginInMessage(message);
+        return plugin != null ? plugin : logger;
+    }
+
+    /** Плагин из типовых сообщений ядра об ошибке плагина или null. */
+    public static String pluginInMessage(String message) {
         Matcher m = PLUGIN_IN_MESSAGE.matcher(message);
-        return m.find() ? m.group(1) : logger;
+        return m.find() ? m.group(1) : null;
     }
 
     private synchronized boolean acquire(int perMinute) {

@@ -1,6 +1,9 @@
 package net.mcdiag.agent.transport;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -8,6 +11,8 @@ import java.util.logging.Logger;
 import net.mcdiag.agent.McDiagPlugin;
 import net.mcdiag.agent.buffer.TelemetryBuffer;
 import net.mcdiag.agent.config.AgentConfig;
+import net.mcdiag.agent.module.Channel;
+import net.mcdiag.agent.module.ModuleRegistry;
 import net.mcdiag.agent.remote.RemoteCommandParser;
 
 /**
@@ -123,14 +128,21 @@ public final class BatchSender implements Runnable {
             boolean wasFree = panel.free();
             boolean hadHeatmap = panel.heatmap();
             boolean hadEconomy = panel.economy();
+            Set<String> hadCaps = panel.caps();
+            boolean answered = panel.answered();
             panel.update(res.body());
+            ModuleRegistry modules = plugin.modules();
+            if (modules != null) {
+                modules.clearUnsupportedChannels();
+            }
             // Команды и чат лежат в одной очереди: чистим, только если выключено и то и другое.
             plugin.buffer().clearOptional(!panel.commands() && !panel.chat(), !panel.richSpikes());
             plugin.buffer().clearModules(!panel.chunkgen(), !panel.economy());
             if (!panel.heatmap()) {
                 plugin.buffer().clearHeat();
             }
-            if (wasFree != panel.free() || hadHeatmap != panel.heatmap() || hadEconomy != panel.economy()) {
+            if (wasFree != panel.free() || hadHeatmap != panel.heatmap() || hadEconomy != panel.economy()
+                    || !answered || !hadCaps.equals(panel.caps())) {
                 plugin.onPanelChanged();
             }
             plugin.remote().accept(RemoteCommandParser.parse(res.body()));
@@ -154,6 +166,11 @@ public final class BatchSender implements Runnable {
             plugin.panel().reset();
             plugin.buffer().clearOptional(true, true);
             plugin.buffer().clearModules(true, true);
+            ModuleRegistry modules = plugin.modules();
+            if (modules != null) {
+                modules.clearUnsupportedChannels();
+            }
+            plugin.onPanelChanged();
             report(status, "batch dropped " + status + code(res), true);
         } else {
             backoff(cfg, now);
@@ -165,10 +182,11 @@ public final class BatchSender implements Runnable {
     private boolean buildBatch(AgentConfig cfg, long now) {
         TelemetryBuffer buffer = plugin.buffer();
         boolean heartbeat = now - lastAttemptAt >= HEARTBEAT_MS;
-        if (buffer.isEmpty() && !heartbeat) {
+        List<Channel> channels = activeChannels();
+        if (buffer.isEmpty() && channelsEmpty(channels) && !heartbeat) {
             return false;
         }
-        int items = assemble(sb, buffer, cfg.maxBatchEvents(), UUID.randomUUID(), now, pluginJson.get());
+        int items = assemble(sb, buffer, cfg.maxBatchEvents(), UUID.randomUUID(), now, pluginJson.get(), channels);
         if (items == 0 && !heartbeat) {
             return false;
         }
@@ -192,6 +210,36 @@ public final class BatchSender implements Runnable {
      */
     static int assemble(StringBuilder sb, TelemetryBuffer buffer, int maxEvents, UUID batchId, long now,
                         String pluginJson) {
+        return assemble(sb, buffer, maxEvents, batchId, now, pluginJson, List.of());
+    }
+
+    /** Разделы модулей, которые панель сейчас принимает. */
+    private List<Channel> activeChannels() {
+        ModuleRegistry modules = plugin.modules();
+        if (modules == null || plugin.panel().free()) {
+            return List.of();
+        }
+        List<Channel> out = new ArrayList<>();
+        for (Channel c : modules.channels()) {
+            if (plugin.panel().has(c.cap())) {
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
+    private static boolean channelsEmpty(List<Channel> channels) {
+        for (Channel c : channels) {
+            if (!c.isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @param channels разделы модулей; идут после основных данных, порядок — порядок регистрации */
+    static int assemble(StringBuilder sb, TelemetryBuffer buffer, int maxEvents, UUID batchId, long now,
+                        String pluginJson, List<Channel> channels) {
         sb.setLength(0);
         sb.append("{\"batchId\":\"").append(batchId)
                 .append("\",\"sentAt\":").append(now)
@@ -209,6 +257,9 @@ public final class BatchSender implements Runnable {
         items += optional(sb, "heat", budget, buffer::drainHeat);
         items += optional(sb, "chunkgen", budget, buffer::drainChunkGen);
         items += optional(sb, "economy", budget, buffer::drainEconomy);
+        for (Channel channel : channels) {
+            items += optional(sb, channel.name(), budget, channel::drain);
+        }
         String inventory = budget[0] > 512 ? buffer.takeInventory(budget[0] - 32) : null;
         if (inventory != null) {
             sb.append(",\"inventory\":").append(inventory);

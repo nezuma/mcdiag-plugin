@@ -18,7 +18,7 @@ public final class StackTraceFormatter {
 
     static final int HEAD = 20;
     static final int TAIL = 15;
-    static final int MAX_CHARS = 6000;
+    public static final int MAX_CHARS = 6000;
     private static final int MAX_LINE = 300;
     private static final int MAX_CAUSES = 8;
 

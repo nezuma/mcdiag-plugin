@@ -13,15 +13,16 @@ import net.mcdiag.agent.profiler.ProfileWindow;
 import net.mcdiag.agent.profiler.Profiler;
 import net.mcdiag.agent.profiler.SpikeRecord;
 import net.mcdiag.agent.transport.BatchSender;
+import net.mcdiag.api.ModuleInfo;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.command.TabExecutor;
 
-/** /diag status | plugins | spikes | token [value] | reload */
+/** /diag status | modules | module &lt;id&gt; on|off | plugins | spikes | token [value] | reload */
 public final class DiagCommand implements TabExecutor {
 
-    private static final List<String> SUBCOMMANDS = List.of("status", "plugins", "spikes", "token", "reload", "pos1", "pos2", "poi", "heatmap");
+    private static final List<String> SUBCOMMANDS = List.of("status", "modules", "module", "plugins", "spikes", "token", "reload", "pos1", "pos2", "poi", "heatmap");
     private static final long MB = 1024 * 1024;
 
     private final McDiagPlugin plugin;
@@ -35,6 +36,8 @@ public final class DiagCommand implements TabExecutor {
         String sub = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
         switch (sub) {
             case "status" -> status(sender);
+            case "modules" -> modules(sender);
+            case "module" -> module(sender, args);
             case "plugins" -> plugins(sender);
             case "spikes" -> spikes(sender);
             case "token" -> token(sender, args);
@@ -57,11 +60,45 @@ public final class DiagCommand implements TabExecutor {
         if (args.length == 2 && args[0].equalsIgnoreCase("heatmap")) {
             return HeatmapControl.subcommands().stream().filter(x -> x.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         }
+        if (args.length == 2 && args[0].equalsIgnoreCase("module")) {
+            return plugin.modules().ids().stream().filter(x -> x.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("module")) {
+            return List.of("on", "off").stream().filter(x -> x.startsWith(args[2].toLowerCase(Locale.ROOT))).toList();
+        }
         if (args.length != 1) {
             return List.of();
         }
         String prefix = args[0].toLowerCase(Locale.ROOT);
         return SUBCOMMANDS.stream().filter(s -> s.startsWith(prefix)).toList();
+    }
+
+    private void modules(CommandSender sender) {
+        sender.sendMessage("[MCDiag] Modules (panel caps: " + String.join(", ", plugin.panel().caps()) + ")");
+        for (ModuleInfo m : plugin.modules().modules()) {
+            String owner = m.owner().equals(plugin.getName()) ? "" : " [" + m.owner() + "]";
+            sender.sendMessage(" " + m.id() + owner + ": " + m.state() + (m.status().isEmpty() ? "" : " — " + m.status()));
+        }
+    }
+
+    /** Включение модуля пишется в config.yml: переживает перезапуск. */
+    private void module(CommandSender sender, String[] args) {
+        if (args.length < 3 || !(args[2].equalsIgnoreCase("on") || args[2].equalsIgnoreCase("off"))) {
+            sender.sendMessage("[MCDiag] Usage: /diag module <id> on|off");
+            return;
+        }
+        String id = args[1].toLowerCase(Locale.ROOT);
+        if (!plugin.modules().has(id)) {
+            sender.sendMessage("[MCDiag] Unknown module: " + id);
+            return;
+        }
+        boolean on = args[2].equalsIgnoreCase("on");
+        plugin.getConfig().set("modules." + id + ".enabled", on);
+        plugin.saveConfig();
+        String problem = plugin.reload();
+        sender.sendMessage("[MCDiag] Module " + id + " " + (on ? "enabled" : "disabled")
+                + (problem == null ? "" : " — " + problem)
+                + (on && (id.equals("logs") || id.equals("network")) ? " (the capture hook itself is installed at server start)" : ""));
     }
 
     private void status(CommandSender sender) {

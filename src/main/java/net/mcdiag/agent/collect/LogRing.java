@@ -67,6 +67,14 @@ public final class LogRing extends Handler {
         }
     }
 
+    /** Строка из перехвата Log4j: тот же формат, что у JUL-записей. */
+    public void add(long ts, String level, String logger, String message) {
+        if (message == null || !active.getAsBoolean()) {
+            return;
+        }
+        add(new Line(ts, level, logger, message.length() > MAX_STORED ? message.substring(0, MAX_STORED) : message));
+    }
+
     private synchronized void add(Line line) {
         lines[next] = line;
         next = (next + 1) % CAPACITY;
