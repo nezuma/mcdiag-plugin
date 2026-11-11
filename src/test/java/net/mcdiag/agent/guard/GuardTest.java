@@ -58,7 +58,15 @@ class GuardTest {
         assertEquals("FreeOp", r.name);
         assertEquals("1.2", r.version);
         assertEquals(64, r.sha256.length());
+        assertEquals(40, r.sha1.length());
+        assertEquals(128, r.sha512.length());
         assertEquals("critical", r.risk());
+        // Подозрительный класс уходит в общую базу подписью из первых 128 бит SHA-256 его байтов.
+        String sig = r.signatures.get("net.mcdiag.agent.guard.EvilSample");
+        assertEquals(JarScanner.sha256(classBytes(EvilSample.class)).substring(0, 32), sig);
+        String scanJson = r.toJson(1L);
+        assertTrue(scanJson.contains("\"s1\":\"" + r.sha1 + "\""), scanJson);
+        assertTrue(scanJson.contains("\"cs\":[{\"h\":\"" + sig + "\",\"c\":\"net.mcdiag.agent.guard.EvilSample\"}]"), scanJson);
         for (String k : List.of("exec", "define_class", "exfil_host", "raw_ip", "exit", "native_lib", "hidden_code", "exec_network")) {
             assertTrue(r.findings.containsKey(k), k + " in " + r.findings.keySet());
         }
@@ -74,6 +82,8 @@ class GuardTest {
         JarScanner.Report b = JarScanner.scan(jar("B.jar", Map.of("plugin.yml", "name: B\n".getBytes(), "Inj.class", injected)), "plugins/B.jar");
         JarScanner.Report c = JarScanner.scan(jar("C.jar", Map.of("plugin.yml", "name: C\n".getBytes())), "plugins/C.jar");
         assertEquals("info", c.risk());
+        assertTrue(c.signatures.isEmpty());
+        assertEquals(1, a.signatures.size(), "root-package class is signed");
         List<String[]> shared = JarScanner.sharedRootClasses(List.of(a, b, c));
         assertEquals(1, shared.size());
         assertEquals("Inj.class", shared.get(0)[0]);

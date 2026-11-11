@@ -29,6 +29,8 @@ public final class JarScanner {
     private static final long MAX_CLASS_BYTES = 1L << 20;
     private static final long MAX_TOTAL_BYTES = 96L << 20;
     private static final int MAX_EXAMPLE = 200;
+    /** Подписи классов для общей базы: только подозрительные и из корневого пакета. */
+    public static final int MAX_SIGNATURES = 20;
 
     /** Вызов → находка. Ключ — «класс.метод» в виде из пула констант. */
     private static final Map<String, String[]> CALLS = new LinkedHashMap<>();
@@ -69,11 +71,16 @@ public final class JarScanner {
         public String name;
         public String version;
         public String sha256;
+        /** SHA-1 и SHA-512: по ним Modrinth находит официальную версию (агент 0.11.0+) */
+        public String sha1;
+        public String sha512;
         public long size;
         public int classes;
         public final Map<String, Finding> findings = new LinkedHashMap<>();
         /** Хеши классов в корневом пакете: одинаковый такой класс в разных jar — признак заражения */
         public final Map<String, String> rootClasses = new LinkedHashMap<>();
+        /** Имя класса → подпись (первые 128 бит SHA-256 его байтов): одинаковый внедрённый класс в разных jar */
+        public final Map<String, String> signatures = new LinkedHashMap<>();
         public boolean truncated;
 
         public String risk() {
@@ -93,7 +100,11 @@ public final class JarScanner {
             if (version != null) {
                 Json.str(sb.append(",\"ver\":"), version, 64);
             }
-            sb.append(",\"sha\":\"").append(sha256).append("\",\"size\":").append(size)
+            sb.append(",\"sha\":\"").append(sha256).append('"');
+            if (sha1 != null) {
+                sb.append(",\"s1\":\"").append(sha1).append("\",\"s5\":\"").append(sha512).append('"');
+            }
+            sb.append(",\"size\":").append(size)
                     .append(",\"cls\":").append(classes).append(",\"risk\":\"").append(risk()).append('"');
             if (truncated) {
                 sb.append(",\"part\":true");
@@ -111,7 +122,18 @@ public final class JarScanner {
                 }
                 sb.append('}');
             }
-            return sb.append("]}").toString();
+            sb.append(']');
+            if (!signatures.isEmpty()) {
+                sb.append(",\"cs\":[");
+                int i = 0;
+                for (Map.Entry<String, String> e : signatures.entrySet()) {
+                    sb.append(i++ > 0 ? "," : "").append("{\"h\":\"").append(e.getValue()).append('"');
+                    Json.str(sb.append(",\"c\":"), e.getKey(), 160);
+                    sb.append('}');
+                }
+                sb.append(']');
+            }
+            return sb.append('}').toString();
         }
     }
 
@@ -131,7 +153,10 @@ public final class JarScanner {
         Report report = new Report();
         report.file = shownName;
         report.size = Files.size(jar);
-        report.sha256 = sha256(jar);
+        String[] hashes = hashes(jar);
+        report.sha1 = hashes[0];
+        report.sha256 = hashes[1];
+        report.sha512 = hashes[2];
         long total = 0;
         int obfuscatedNames = 0;
         try (ZipFile zip = new ZipFile(jar.toFile())) {
@@ -165,8 +190,10 @@ public final class JarScanner {
                 }
                 total += bytes.length;
                 report.classes++;
-                if (entry.indexOf('/') < 0) {
-                    report.rootClasses.put(entry, sha256(bytes));
+                boolean root = entry.indexOf('/') < 0;
+                String classHash = root ? sha256(bytes) : null;
+                if (root) {
+                    report.rootClasses.put(entry, classHash);
                 }
                 if (looksObfuscated(entry)) {
                     obfuscatedNames++;
@@ -177,8 +204,9 @@ public final class JarScanner {
                 } catch (IOException | RuntimeException ex) {
                     continue;
                 }
-                if (info != null) {
-                    inspect(report, info);
+                if (info != null && (inspect(report, info) || root) && report.signatures.size() < MAX_SIGNATURES) {
+                    String className = entry.substring(0, entry.length() - ".class".length()).replace('/', '.');
+                    report.signatures.put(className, (classHash != null ? classHash : sha256(bytes)).substring(0, 32));
                 }
             }
         }
@@ -189,7 +217,9 @@ public final class JarScanner {
         return report;
     }
 
-    static void inspect(Report report, ClassInfo info) {
+    /** @return true, если в классе есть заметная находка (средняя и выше) — его подпись уходит в общую базу */
+    static boolean inspect(Report report, ClassInfo info) {
+        boolean notable = false;
         String where = info.name == null ? "?" : info.name.replace('/', '.');
         for (String ref : info.methodRefs) {
             String[] rule = CALLS.get(ref);
@@ -199,6 +229,7 @@ public final class JarScanner {
             }
             if (rule != null) {
                 add(report, rule[0], rule[1], where + " → " + ref.replace('/', '.'));
+                notable |= rank(rule[1]) >= 2;
             }
         }
         for (String s : info.strings) {
@@ -207,8 +238,10 @@ public final class JarScanner {
             }
             if (EXFIL.matcher(s).find()) {
                 add(report, "exfil_host", "high", maskSecrets(s));
+                notable = true;
             } else if (RAW_IP_URL.matcher(s).find()) {
                 add(report, "raw_ip", "medium", maskSecrets(s));
+                notable = true;
             } else if (SENSITIVE_FILE.matcher(s).find()) {
                 add(report, "sensitive_files", "low", s);
             }
@@ -216,6 +249,7 @@ public final class JarScanner {
                 add(report, "obfuscator", "low", s);
             }
         }
+        return notable;
     }
 
     /** Сочетания опаснее отдельных находок: запуск процессов + сеть, код из base64. */
@@ -307,24 +341,34 @@ public final class JarScanner {
     }
 
     public static String sha256(Path file) throws IOException {
-        MessageDigest digest = digest();
+        return hashes(file)[1];
+    }
+
+    /** SHA-1, SHA-256 и SHA-512 за одно чтение файла. */
+    public static String[] hashes(Path file) throws IOException {
+        MessageDigest d1 = digest("SHA-1");
+        MessageDigest d256 = digest("SHA-256");
+        MessageDigest d512 = digest("SHA-512");
         try (InputStream in = Files.newInputStream(file)) {
             byte[] buf = new byte[64 * 1024];
             int n;
             while ((n = in.read(buf)) > 0) {
-                digest.update(buf, 0, n);
+                d1.update(buf, 0, n);
+                d256.update(buf, 0, n);
+                d512.update(buf, 0, n);
             }
         }
-        return HexFormat.of().formatHex(digest.digest());
+        HexFormat hex = HexFormat.of();
+        return new String[] {hex.formatHex(d1.digest()), hex.formatHex(d256.digest()), hex.formatHex(d512.digest())};
     }
 
     static String sha256(byte[] bytes) {
-        return HexFormat.of().formatHex(digest().digest(bytes));
+        return HexFormat.of().formatHex(digest("SHA-256").digest(bytes));
     }
 
-    private static MessageDigest digest() {
+    private static MessageDigest digest(String algorithm) {
         try {
-            return MessageDigest.getInstance("SHA-256");
+            return MessageDigest.getInstance(algorithm);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
