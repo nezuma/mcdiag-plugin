@@ -19,6 +19,7 @@ import net.mcdiag.agent.heatmap.HeatmapControl;
 import net.mcdiag.agent.insight.GcWatch;
 import net.mcdiag.agent.insight.JfrInsight;
 import net.mcdiag.agent.insight.MemoryStats;
+import net.mcdiag.agent.guard.GuardModule;
 import net.mcdiag.agent.json.Json;
 import net.mcdiag.agent.logs.LogAggregator;
 import net.mcdiag.agent.logs.LogCapture;
@@ -79,6 +80,7 @@ public final class McDiagPlugin extends JavaPlugin {
     private NetTap netTap;
     private NetAggregator netAggregator;
     private PrivilegesModule privileges;
+    private GuardModule guard;
 
     /**
      * Перехват лога и сети ставится до включения других плагинов: так видны ошибки их запуска,
@@ -179,6 +181,12 @@ public final class McDiagPlugin extends JavaPlugin {
         if (registry.enabledInConfig(PrivilegesModule.ID)) {
             privileges.startEarly(this, getConfig().getStringList("modules.privileges.dangerous_permissions"));
         }
+        guard = new GuardModule(registry, getLogger(), getFile().toPath());
+        registry.registerBuiltin(guard);
+        if (registry.enabledInConfig(GuardModule.ID)) {
+            org.bukkit.configuration.ConfigurationSection guardCfg = getConfig().getConfigurationSection("modules.guard");
+            guard.startEarly(this, guardCfg != null ? guardCfg : new org.bukkit.configuration.MemoryConfiguration());
+        }
         getServer().getPluginManager().registerEvents(registry, this);
         getServer().getServicesManager().register(McDiagApi.class, registry, this, ServicePriority.Normal);
         // Плагины, догруженные после старта, попадут в индекс при обновлении в фоне.
@@ -201,6 +209,9 @@ public final class McDiagPlugin extends JavaPlugin {
         if (registry != null) {
             registry.stopAll();
             getServer().getServicesManager().unregisterAll(this);
+        }
+        if (guard != null) {
+            guard.stop();
         }
         if (logTap != null) {
             logTap.uninstall();
@@ -508,6 +519,10 @@ public final class McDiagPlugin extends JavaPlugin {
         registry.sync();
         if (logCapture != null && !registry.isActive(LogsModule.ID)) {
             logCapture.setAccepting(!panel.answered() && registry.enabledInConfig(LogsModule.ID));
+        }
+        if (guard != null && !registry.isActive(GuardModule.ID)
+                && (panel.answered() || !registry.enabledInConfig(GuardModule.ID))) {
+            guard.stop();
         }
         if (privileges != null && !registry.isActive(PrivilegesModule.ID)
                 && (panel.answered() || !registry.enabledInConfig(PrivilegesModule.ID))) {
