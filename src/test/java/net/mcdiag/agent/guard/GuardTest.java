@@ -133,4 +133,26 @@ class GuardTest {
                 JarScanner.maskSecrets("https://discord.com/api/webhooks/1234567890/AbCdEfGhIjKlMnOp"));
         assertEquals("ftp://admin:***@10.0.0.1/", JarScanner.maskSecrets("ftp://admin:hunter2@10.0.0.1/"));
     }
+
+    @Test
+    void recognisesOwnAgentJarUnderAnyName() throws Exception {
+        Path agent = jar("MCDiag-Agent-0.11.1.jar", Map.of(
+                "plugin.yml", "name: MCDiag\nversion: '0.11.1'\nmain: net.mcdiag.agent.McDiagPlugin\n".getBytes(StandardCharsets.UTF_8),
+                "net/mcdiag/agent/McDiagPlugin.class", classBytes(GuardTest.class)));
+        assertTrue(GuardModule.isAgentJar(agent));
+        Path fake = jar("Fake.jar", Map.of(
+                "plugin.yml", "name: MCDiag\nmain: evil.Main\n".getBytes(StandardCharsets.UTF_8)));
+        assertFalse(GuardModule.isAgentJar(fake));
+        assertFalse(GuardModule.isAgentJar(agent.resolveSibling("missing.jar")));
+    }
+
+    @Test
+    void ruleStringsOfSecurityPluginsAreNotFindings() throws Exception {
+        Path file = jar("Shield.jar", Map.of(
+                "plugin.yml", "name: Shield\n".getBytes(StandardCharsets.UTF_8),
+                "net/mcdiag/agent/guard/RegexHolder.class", classBytes(RegexHolder.class)));
+        JarScanner.Report r = JarScanner.scan(file, "plugins/Shield.jar");
+        assertFalse(r.findings.containsKey("exfil_host"), r.findings.keySet().toString());
+        assertEquals("info", r.risk());
+    }
 }

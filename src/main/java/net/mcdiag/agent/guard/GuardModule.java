@@ -63,6 +63,7 @@ public final class GuardModule implements AgentModule {
     private static final int MAX_SEEN_PIDS = 4096;
     private static final Pattern SUSPICIOUS_CMD = Pattern.compile(
             "(?i)(?:^|[\\s/])(?:curl|wget|bash|sh|zsh|nc|ncat|netcat|socat|python\\d?|perl|php|powershell|cmd\\.exe|xmrig|minerd|cpuminer|base64)(?:\\s|$)|/tmp/|/dev/shm");
+    private static final Pattern JVM_HELPER = Pattern.compile("(?:^|/)lib/jspawnhelper(?:\\s|$)");
     private static final Pattern SECRET_ARG = Pattern.compile(
             "(?i)((?:password|passwd|pass|token|secret|key|auth)[=:]\\s*)\\S+|(://[^/:@\\s]+:)[^@\\s]+@");
 
@@ -252,6 +253,10 @@ public final class GuardModule implements AgentModule {
             debounce(jar);
             return;
         }
+        // Файл дописан только сейчас: при первом событии плагин мог быть ещё неполным.
+        if (isOwn(jar)) {
+            return;
+        }
         String shown = "plugins/" + jar.getFileName();
         long ts = System.currentTimeMillis();
         try {
@@ -360,19 +365,46 @@ public final class GuardModule implements AgentModule {
         return Json.str(sb.append(",\"file\":"), file, 256).append('}').toString();
     }
 
+    /**
+     * Свой jar агента. Сравнение по файлу не годится: при обновлении на работающем сервере старый файл
+     * уже удалён, а на Paper/Leaf загружена перемапленная копия из plugins/.paper-remapped. Поэтому — путь,
+     * имя файла, а для обновления под другим именем — главный класс агента в plugin.yml.
+     */
     private boolean isOwn(Path jar) {
+        if (ownJar == null) {
+            return false;
+        }
+        if (jar.toAbsolutePath().normalize().equals(ownJar.toAbsolutePath().normalize())
+                || jar.getFileName().equals(ownJar.getFileName())) {
+            return true;
+        }
         try {
-            if (ownJar == null) {
-                return false;
-            }
-            if (Files.isSameFile(jar, ownJar)) {
+            if (Files.exists(jar) && Files.exists(ownJar) && Files.isSameFile(jar, ownJar)) {
                 return true;
             }
-            // Paper/Leaf грузят перемапленную копию из plugins/.paper-remapped: оригинал — файл с тем же именем.
-            Path parent = ownJar.toAbsolutePath().normalize().getParent();
-            return parent != null && !parent.equals(pluginsDir.toAbsolutePath().normalize())
-                    && jar.getFileName().equals(ownJar.getFileName());
-        } catch (IOException e) {
+        } catch (IOException ignored) {
+            // Файл удалён или ещё пишется — решит проверка содержимого.
+        }
+        return isAgentJar(jar);
+    }
+
+    private static final java.util.regex.Pattern AGENT_MAIN = java.util.regex.Pattern.compile(
+            "(?m)^main:\\s*['\"]?net\\.mcdiag\\.agent\\.McDiagPlugin['\"]?\\s*$");
+
+    static boolean isAgentJar(Path jar) {
+        if (!Files.isRegularFile(jar)) {
+            return false;
+        }
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile())) {
+            java.util.zip.ZipEntry yml = zip.getEntry("plugin.yml");
+            if (yml == null || zip.getEntry("net/mcdiag/agent/McDiagPlugin.class") == null) {
+                return false;
+            }
+            try (java.io.InputStream in = zip.getInputStream(yml)) {
+                String text = new String(in.readNBytes(16 * 1024), java.nio.charset.StandardCharsets.UTF_8);
+                return AGENT_MAIN.matcher(text).find();
+            }
+        } catch (IOException | RuntimeException e) {
             return false;
         }
     }
@@ -393,6 +425,10 @@ public final class GuardModule implements AgentModule {
                     continue;
                 }
                 String cmd = p.info().commandLine().orElseGet(() -> p.info().command().orElse("?"));
+                // Помощник самой JVM для запуска процессов: настоящий дочерний процесс покажется отдельно.
+                if (JVM_HELPER.matcher(cmd).find()) {
+                    continue;
+                }
                 String masked = maskCommand(cmd);
                 String severity = SUSPICIOUS_CMD.matcher(cmd).find() ? "critical" : "high";
                 StringBuilder sb = new StringBuilder(320).append("{\"t\":\"event\",\"ts\":").append(ts)

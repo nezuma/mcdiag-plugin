@@ -24,6 +24,9 @@ public final class HttpTransport {
     /** Ответ на успешный батч короткий; команды поддержки умещаются с большим запасом */
     private static final int MAX_OK_BODY = 16 * 1024;
     private static final Pattern ERROR_CODE = Pattern.compile("\"code\"\\s*:\\s*\"([A-Z_]{1,64})\"");
+    /** Первое поле, не прошедшее проверку: путь и текст правила из схемы, без самих данных. */
+    private static final Pattern ERROR_DETAIL = Pattern.compile(
+            "\"details\"\\s*:\\s*\\[\\s*\\{\\s*\"path\"\\s*:\\s*\"([^\"]{1,120})\"\\s*,\\s*\"message\"\\s*:\\s*\"([^\"]{0,160})\"");
 
     private final String userAgent;
 
@@ -66,6 +69,10 @@ public final class HttpTransport {
                 if (status >= 400) {
                     Matcher m = ERROR_CODE.matcher(head);
                     errorCode = m.find() ? m.group(1) : null;
+                    Matcher d = ERROR_DETAIL.matcher(head);
+                    if (errorCode != null && d.find()) {
+                        errorCode += " at " + d.group(1) + ": " + d.group(2);
+                    }
                 } else {
                     okBody = head;
                 }

@@ -54,6 +54,8 @@ public final class JarScanner {
                     + "|webhook\\.site|requestbin|pipedream\\.net|ngrok|duckdns\\.org|trycloudflare\\.com");
     private static final Pattern RAW_IP_URL = Pattern.compile("(?i)\\b(?:https?|tcp)://(?:\\d{1,3}\\.){3}\\d{1,3}\\b");
     private static final Pattern SENSITIVE_FILE = Pattern.compile("(?i)(?:^|[/\\\\])(?:ops|whitelist|banned-players|banned-ips)\\.json$|server\\.properties$");
+    /** Регулярное выражение или шаблон правил (как в средствах защиты), а не адрес — не находка. */
+    private static final Pattern REGEX_LIKE = Pattern.compile("\\\\[.dswbSDW]|\\(\\?[:i!=<]|\\[\\^?[^\\]]*\\][+*]");
     private static final Pattern OBFUSCATOR = Pattern.compile("(?i)allatori|zelix|zkm|branchlock|skidfuscator|stringer|paramorphism|radon|bozar");
 
     private JarScanner() {
@@ -233,7 +235,7 @@ public final class JarScanner {
             }
         }
         for (String s : info.strings) {
-            if (s.length() < 6 || s.length() > 2000) {
+            if (s.length() < 6 || s.length() > 2000 || REGEX_LIKE.matcher(s).find()) {
                 continue;
             }
             if (EXFIL.matcher(s).find()) {
